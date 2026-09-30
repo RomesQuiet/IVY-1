@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.wav
+memory.json
+state.json
+.DS_Store
