@@ -2,7 +2,7 @@
 """IVY-1 — Personal AI Assistant (Groq-powered, streaming)."""
 
 from ivy.brain import Brain
-from ivy import voice
+from ivy import config, voice
 
 BANNER = r"""
   __  __    _    _____     ____
@@ -35,8 +35,12 @@ def main():
                 try:
                     if listener is None:
                         from ivy.wake import WakeListener
-                        listener = WakeListener(wakeword="hey_jarvis", threshold=0.5)
-                    listener.wait_for_wake()
+                        listener = WakeListener(
+                            wakeword=config.WAKE_WORD,
+                            threshold=config.WAKE_THRESHOLD,
+                        )
+                    if not listener.wait_for_wake():
+                        continue
                     voice.chime()
                     awake = True
                     print("👂 Awake — I'm listening. "
@@ -61,13 +65,11 @@ def main():
                 if not user_input:
                     continue
                 print(f"You (voice): {user_input}")
-                print(f"   ↪ exit-check: {voice.should_exit_voice(user_input)}")   # ← add
 
                 if voice.should_exit_voice(user_input):
                     awake = False
                     voice.speak("Going to sleep.")
                     voice.wait_until_silent()
-                    print("💤 Sleeping — say 'Hey Jarvis' to wake me.\n")
                     continue
             except KeyboardInterrupt:
                 mode = "text"
@@ -82,6 +84,27 @@ def main():
         # =================================================================
         # VOICE MODE
         # =================================================================
+        elif mode == "voice":
+            try:
+                voice.wait_until_silent()          # no self-echo
+                wav = voice.record_until_silence()
+                user_input = voice.transcribe(wav)
+                if not user_input:
+                    continue
+                print(f"You (voice): {user_input}")
+
+                if voice.should_exit_voice(user_input):
+                    mode = "text"
+                    print("⌨️  Text mode ON.\n")
+                    continue
+            except KeyboardInterrupt:
+                mode = "text"
+                voice.stop_speaking()
+                print("\n⌨️  Text mode ON.\n")
+                continue
+            except Exception as e:
+                print(f"[voice error] {e}")
+                continue
 
         # =================================================================
         # TEXT MODE
@@ -114,10 +137,15 @@ def main():
                 else:
                     for m in mems:
                         print(f"  [{m['id']}] {m['text']}  ({m['updated']})")
+            elif cmd == "/voice":
+                mode = "voice"
+                awake = False
+                print("🎙️  Voice mode ON. Say 'stop listening' or Ctrl+C for text.\n")
             elif cmd == "/wake":
                 mode = "wake"
                 awake = False
-                print("🔮 Wake-word mode ON. Say 'Hey Jarvis'. Ctrl+C to stop.\n")
+                pretty = config.WAKE_WORD.replace("_", " ")
+                print(f"🔮 Wake-word mode ON. Say '{pretty}'. Ctrl+C to stop.\n")
             elif cmd == "/text":
                 mode = "text"
                 awake = False
@@ -141,7 +169,7 @@ def main():
 
         def stream_token(t):
             if not printed_prefix["done"]:
-                print("MAE-2: ", end="", flush=True)
+                print("IVY-1: ", end="", flush=True)
                 printed_prefix["done"] = True
             print(t, end="", flush=True)
 
@@ -167,7 +195,7 @@ def main():
             continue
 
         if not printed_prefix["done"]:
-            print("MAE-2: (no reply)")
+            print("IVY-1: (no reply)")
         print("\n")
 
         # --- barge-in monitor (voice/wake only) ---

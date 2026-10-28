@@ -38,10 +38,8 @@ EXIT_PHRASES = [
     "switch to text",
     "go to sleep",
     "going to sleep",
-    "goodbye mae",
-    "goodbye may",
-    "bye mae",
-    "bye may",
+    "goodbye ivy",
+    "bye ivy",
     "that's all",
     "thats all",
     "that will be all",
@@ -93,9 +91,6 @@ def should_exit_voice(text: str) -> bool:
 
     return False
 
-def should_exit_voice(text: str) -> bool:
-    t = text.lower().strip()
-    return any(p in t for p in EXIT_PHRASES)
 
 
 def record_until_silence(
@@ -233,6 +228,10 @@ def transcribe(wav_path: str) -> str:
     if normalized in _WHISPER_HALLUCINATIONS:
         print("(ignored a Whisper hallucination)")
         return ""
+
+    # Single-word exit commands ("stop", "goodbye") must survive the length filter.
+    if _normalize(text) in EXIT_EXACT:
+        return text
 
     if len(normalized.split()) < 2 and len(normalized) < 8:
         print("(too short — ignoring)")

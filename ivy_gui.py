@@ -206,6 +206,7 @@ class IvyApp:
                     target=self._audio_loop, daemon=True
                 )
                 self.audio_thread.start()
+                self._js("window.setWakeUI(true)")
                 print("🔮 Wake-word mode ON.")
             else:
                 if not self.audio_running:
@@ -213,6 +214,7 @@ class IvyApp:
                 self.audio_running = False
                 voice.stop_speaking()
                 audio.abort_wake()
+                self._js("window.setWakeUI(false)")
                 print("💤 Wake mode OFF.")
         return {"ok": True}
 
@@ -241,6 +243,7 @@ class IvyApp:
         except Exception as e:
             print(f"[wake error] {e}")
             self.audio_running = False
+            self._js("window.setWakeUI(false)")
             return
 
         while self.audio_running:
@@ -268,7 +271,7 @@ class IvyApp:
                     continue
 
                 print(f"You (voice): {text}")
-                self._js(f"pywebview._simulate_user({json.dumps(text)})")
+                self._js(f"window._simulate_user({json.dumps(text)})")
 
                 if voice.should_exit_voice(text):
                     self.sleeping = True

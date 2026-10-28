@@ -320,6 +320,13 @@ window._simulate_user = function(text) {
   chatEl.scrollTop = chatEl.scrollHeight;
 };
 
+// Keeps the wake button in sync when wake mode changes from Python
+// (console /wake, /sleep, or a listener that failed to start).
+window.setWakeUI = function(on) {
+  wakeBtn.classList.toggle('active', on);
+  modeEl.textContent = on ? 'wake' : 'text';
+};
+
 window.beginMessage = function() {
   window._currentEl = null;
   window._currentText = '';

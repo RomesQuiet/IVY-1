@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+DEBUG_WAKE = False   # True → mostra scores em tempo real
+
 # Set to True to force user confirmation before run_shell executes.
 # Set to False for fully autonomous behavior (riskier).
 CONFIRM_SHELL = False
@@ -15,7 +17,7 @@ ACTION_MODE = "session"
 
 WAKE_WORD = "ok_ivy"
 WAKE_MODEL_PATH = str(Path(__file__).resolve().parent / "models" / "ok_ivy.onnx")
-WAKE_THRESHOLD = 0.5
+WAKE_THRESHOLD = 0.75
 TTS_VOICE = "Kate (Enhanced)"   # ← use whatever the grep output showed
 MUTED = False
 
