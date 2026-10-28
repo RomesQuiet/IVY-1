@@ -1,5 +1,4 @@
-# mae/router.py
-# mae/router.py
+# ivy/router.py
 """Task classification + model routing with rate-limit awareness."""
 
 import json
@@ -11,11 +10,16 @@ from . import config
 
 STATE_PATH = Path(__file__).resolve().parent.parent / "state.json"
 
+def _chain(*models):
+    return list(dict.fromkeys(models))   # dedupe, keep order
+
+
 DIFFICULTY_CHAINS = {
-    "simple":  [config.MODEL_FAST,  config.MODEL_MAIN,  config.MODEL_HEAVY],
-    "medium":  [config.MODEL_MAIN,  config.MODEL_HEAVY, config.MODEL_FAST],
-    "complex": [config.MODEL_HEAVY, config.MODEL_MAIN,  config.MODEL_FAST],
+    "simple":  _chain(config.MODEL_FAST,  config.MODEL_MAIN,  config.MODEL_HEAVY),
+    "medium":  _chain(config.MODEL_MAIN,  config.MODEL_HEAVY, config.MODEL_FAST),
+    "complex": _chain(config.MODEL_HEAVY, config.MODEL_MAIN,  config.MODEL_FAST),
 }
+ALL_MODELS = _chain(config.MODEL_FAST, config.MODEL_MAIN, config.MODEL_HEAVY)
 
 
 # Weighted signals: positive pushes toward complex, negative toward simple.
@@ -109,7 +113,7 @@ def parse_retry_seconds(error_message: str) -> int:
     m = re.search(r"try again in ([\d.]+)s", error_message)
     if m:
         return int(float(m.group(1))) + 5
-    return 3600
+    return 60
 
 
 class ModelRouter:
@@ -143,12 +147,12 @@ class ModelRouter:
             return False
         return True
 
-    def mark_dead(self, model: str, seconds: int):
+    def mark_dead(self, model: str, seconds: int, reason: str = "rate-limited"):
         until = (datetime.now() + timedelta(seconds=seconds)).isoformat(timespec="seconds")
         self.state["dead_until"][model] = until
         self._save()
         mins = max(1, seconds // 60)
-        print(f"  💀 {model.split('/')[-1]} rate-limited — sleeping ~{mins} min")
+        print(f"  💀 {model.split('/')[-1]} {reason} — skipping it for ~{mins} min")
 
     def dead_summary(self) -> str:
         dead = {m: t for m, t in self.state["dead_until"].items() if self.is_dead(m)}
@@ -167,8 +171,7 @@ class ModelRouter:
         return self.chain_for(difficulty)[0]
 
     def alive_count(self) -> int:
-        models = {config.MODEL_FAST, config.MODEL_MAIN, config.MODEL_HEAVY}
-        return sum(1 for m in models if not self.is_dead(m))
+        return sum(1 for m in ALL_MODELS if not self.is_dead(m))
 
 
 _router = None

@@ -391,10 +391,22 @@ consoleInput.addEventListener('keydown', async (e) => {
 });
 
 // ---------- startup ----------
-window.addEventListener('pywebviewready', () => {
-  addMsg('system', 'IVY-1 v1.7.0 — ready.');
-  appendConsole('IVY-1 v1.7.0 — console ready');
+let readyShown = false;
+window.onReady = () => {
+  if (readyShown) return;
+  readyShown = true;
+  if (window._bootMsg) window._bootMsg.remove();
+  addMsg('system', 'IVY-1 — ready. Type, or press the wake button and say "OK Ivy".');
   setState('idle');
+};
+
+window.addEventListener('pywebviewready', async () => {
+  appendConsole('IVY-1 — console ready (/help for commands)');
+  let ready = false;
+  try { ready = await pywebview.api.is_ready(); } catch (e) {}
+  if (ready) { window.onReady(); return; }
+  window._bootMsg = addMsg('system', 'Starting up…');
+  setState('thinking');
 });
 </script>
 </body>

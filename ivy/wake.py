@@ -27,6 +27,11 @@ _DEFAULT_MODEL = Path(__file__).resolve().parent / "models" / "ok_ivy.onnx"
 SILENCE_RMS = 2
 SILENCE_WARN_SEC = 3.0
 
+MEL_CONTEXT = 480            # samples of overlap so each frame yields 8 clean mel frames
+MEL_FRAMES_PER_FRAME = 8     # 1280 samples / 160 hop
+EMBED_WINDOW = 76            # mel frames per embedding
+EMBEDDINGS = 16              # classifier input length
+
 
 class WakeListener:
     def __init__(self, wakeword: str = "ok_ivy", threshold: float = 0.5,
@@ -45,17 +50,41 @@ class WakeListener:
         self.model_name = path.stem
         self.wakeword = wakeword
         self.threshold = threshold
+        self._classifier, self._classifier_input = self.model._classifiers[self.model_name]
+        self._reset_stream()
 
-        # Rolling ~2 s window of 16 kHz int16 audio
-        self.window_samples = SAMPLE_RATE * 2
-        self._buffer = np.zeros(0, dtype=np.int16)
+    # WakeWordModel.predict() recomputes 16 embeddings over a 2 s window every
+    # call — 90–200 ms on this Mac, longer than the 80 ms between frames, so the
+    # listener fell behind the mic. Each new frame only adds one embedding, so
+    # we keep a rolling mel/embedding history and score in ~5 ms instead.
+    # (Scores match the full-window predict to within ~0.04.)
+
+    def _reset_stream(self):
+        self._tail = np.zeros(0, dtype=np.float32)      # last 480 samples of context
+        self._mel = np.zeros((0, 32), dtype=np.float32)  # last 76 mel frames
+        self._embeddings: list[np.ndarray] = []          # last 16 embeddings
+
+    def _score_frame(self, frame: np.ndarray) -> float:
+        x = frame.astype(np.float32) / 32768.0
+        chunk = np.concatenate([self._tail, x])
+        self._tail = x[-MEL_CONTEXT:]
+        mel = self.model._mel_frontend(chunk)[0][-MEL_FRAMES_PER_FRAME:]
+        self._mel = np.concatenate([self._mel, mel])[-EMBED_WINDOW:]
+        if len(self._mel) < EMBED_WINDOW:
+            return 0.0
+        self._embeddings.append(self.model._speech_embedding(self._mel[np.newaxis])[0])
+        self._embeddings = self._embeddings[-EMBEDDINGS:]
+        if len(self._embeddings) < EMBEDDINGS:
+            return 0.0
+        emb = np.stack(self._embeddings)[np.newaxis].astype(np.float32)
+        return float(self._classifier.run(None, {self._classifier_input: emb})[0][0, 0])
 
     def wait_for_wake(self) -> bool:
         """Block until wake word (or force-wake). Returns True on wake, False on abort."""
         pretty = self.wakeword.replace("_", " ")
         print(f"💤 Sleeping — say '{pretty}' ...")
 
-        self._buffer = np.zeros(0, dtype=np.int16)
+        self._reset_stream()
 
         if not audio.acquire_mic(timeout=5.0):
             print("(mic busy)")
@@ -85,7 +114,7 @@ class WakeListener:
 
                     # Dead-silent input: drop it, and tell the user once.
                     if rms < SILENCE_RMS:
-                        self._buffer = np.zeros(0, dtype=np.int16)
+                        self._reset_stream()
                         if not warned_silent and time.time() - silent_since > SILENCE_WARN_SEC:
                             print("⚠️  Mic is delivering pure silence — check System Settings "
                                   "→ Privacy & Security → Microphone.")
@@ -93,20 +122,11 @@ class WakeListener:
                         continue
                     silent_since = time.time()
 
-                    # Accumulate into a rolling ~2 second window
-                    self._buffer = np.concatenate([self._buffer, audio_np])
-                    if len(self._buffer) > self.window_samples:
-                        self._buffer = self._buffer[-self.window_samples:]
-
-                    if len(self._buffer) < self.window_samples:
-                        continue
-
                     try:
-                        prediction = self.model.predict(self._buffer)
+                        score = self._score_frame(audio_np)
                     except Exception:
+                        self._reset_stream()
                         continue
-
-                    score = float(prediction.get(self.model_name, 0.0))
 
                     if getattr(config, "DEBUG_WAKE", False):
                         print(f"\r   rms={rms:5d}  score={score:.3f}  "

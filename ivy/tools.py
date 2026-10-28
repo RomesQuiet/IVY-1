@@ -1,911 +1,444 @@
+# ivy/tools.py
+"""IVY-1 core tools: web, system, files, packages, memory, timers."""
 
-# mae/tools.py
-from .tools_mac import TOOL_SCHEMAS as MAC_SCHEMAS, TOOL_FUNCTIONS as MAC_FUNCS
-import datetime
+import ast
+import html
 import math
+import operator
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
+from typing import Literal
+from urllib.parse import quote
 
 import requests
 
+from . import config
 from .memory import get_store
+from .toolkit import TOOLS, tool
+
+_HTTP = requests.Session()
+_HTTP.headers["User-Agent"] = "Mozilla/5.0 (Macintosh) IVY-1/1.0"
+
+
+def _sh(cmd: list[str], timeout: float = 30, **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
+
+
+def _osa(script: str, timeout: float = 15) -> str:
+    r = _sh(["osascript", "-e", script], timeout=timeout)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip()[:400])
+    return r.stdout.strip()
 
 
 # =====================================================================
 # CORE
 # =====================================================================
 
-def get_current_time() -> str:
-    return datetime.datetime.now().strftime("%A, %B %d, %Y — %H:%M:%S")
+_OPS = {
+    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+    ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod,
+    ast.Pow: operator.pow, ast.USub: operator.neg, ast.UAdd: operator.pos,
+}
+_MATH = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
+_MATH.update({"abs": abs, "round": round, "min": min, "max": max})
 
 
+def _eval(node):
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
+        return _OPS[type(node.op)](_eval(node.left), _eval(node.right))
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _OPS:
+        return _OPS[type(node.op)](_eval(node.operand))
+    if isinstance(node, ast.Name) and node.id in _MATH:
+        return _MATH[node.id]
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _MATH:
+        return _MATH[node.func.id](*[_eval(a) for a in node.args])
+    raise ValueError("unsupported expression")
+
+
+@tool(expression="Math expression, e.g. '2**10', 'sqrt(16)*3', '15% of 80' as '0.15*80'")
 def calculate(expression: str) -> str:
-    allowed = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
-    allowed.update({"abs": abs, "round": round, "min": min, "max": max})
-    try:
-        return str(eval(expression, {"__builtins__": {}}, allowed))
-    except Exception as e:
-        return f"Calculation error: {e}"
+    """Evaluate a math expression exactly. Use instead of doing arithmetic in your head."""
+    value = _eval(ast.parse(expression.replace("^", "**"), mode="eval").body)
+    if isinstance(value, float):
+        value = round(value, 10)   # 399.50000000000006 → 399.5
+        if value.is_integer():
+            value = int(value)
+    return f"{expression} = {value}"
 
 
 # =====================================================================
-# SEARCH
+# WEB
 # =====================================================================
 
-def search_wikipedia(query: str) -> str:
-    try:
-        r = requests.get(
-            "https://en.wikipedia.org/w/api.php",
-            params={
-                "action": "query",
-                "list": "search",
-                "srsearch": query,
-                "format": "json",
-                "srlimit": 1,
-            },
-            timeout=10,
-        )
-        results = r.json().get("query", {}).get("search", [])
-        if not results:
-            return "No Wikipedia result."
-        title = results[0]["title"]
-        snippet = re.sub(r"<[^>]+>", "", results[0]["snippet"])
-        return f"{title}: {snippet}"
-    except Exception as e:
-        return f"Wikipedia error: {e}"
+def _wikipedia(query: str) -> str:
+    r = _HTTP.get(
+        "https://en.wikipedia.org/w/api.php",
+        params={"action": "query", "list": "search", "srsearch": query,
+                "format": "json", "srlimit": 3},
+        timeout=8,
+    )
+    hits = r.json().get("query", {}).get("search", [])
+    return "\n".join(
+        f"{h['title']}: {html.unescape(re.sub(r'<[^>]+>', '', h['snippet']))}" for h in hits
+    ) or "No results."
 
 
+def _news(query: str) -> str:
+    import xml.etree.ElementTree as ET
+    r = _HTTP.get("https://news.google.com/rss/search",
+                  params={"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}, timeout=8)
+    items = ET.fromstring(r.content).findall(".//item")[:6]
+    return "\n".join(f"{(it.findtext('pubDate') or '')[:16]} | {it.findtext('title')}"
+                     for it in items) or "No news results."
+
+
+@tool(query="Search keywords, e.g. 'F1 race winner', 'latest iPhone model'")
 def web_search(query: str) -> str:
-    wiki = search_wikipedia(query)
-    if "No Wikipedia result" not in wiki and "error" not in wiki.lower():
-        return wiki
-    try:
-        r = requests.get(
-            "https://api.duckduckgo.com/",
-            params={"q": query, "format": "json", "no_html": 1, "skip_disambig": 1},
-            timeout=10,
-        )
-        data = r.json()
-        if data.get("AbstractText"):
-            return data["AbstractText"]
-        if data.get("Answer"):
-            return str(data["Answer"])
-        related = [t for t in data.get("RelatedTopics", [])[:3] if isinstance(t, dict)]
-        if related:
-            return "\n".join(t.get("Text", "") for t in related)
-        return "No result found."
-    except Exception as e:
-        return f"Search error: {e}"
+    """Fast web lookup (~1 s): latest news headlines with dates plus Wikipedia summaries.
+    Use for anything current or factual you aren't sure of."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(2) as pool:
+        news, wiki = pool.submit(_news, query), pool.submit(_wikipedia, query)
+        parts = []
+        for label, fut in (("News", news), ("Wikipedia", wiki)):
+            try:
+                parts.append(f"{label}:\n{fut.result(timeout=10)}")
+            except Exception as e:
+                parts.append(f"{label}: unavailable ({e})")
+    return "\n\n".join(parts)
 
 
+@tool(group="web", ack="Let me dig into that.", timeout=60,
+      question="The full question to research")
+def deep_web_search(question: str) -> str:
+    """Slow (~10 s) full web research that reads real pages and returns a sourced answer.
+    Uses a lot of quota — only when web_search's headlines weren't enough."""
+    from openai import OpenAI
+    client = OpenAI(base_url=config.GROQ_BASE_URL, api_key=config.GROQ_API_KEY)
+    r = client.chat.completions.create(
+        model=config.MODEL_SEARCH,
+        messages=[{"role": "user", "content":
+                   f"Search the web and answer concisely with key facts and source names: {question}"}],
+        tools=[{"type": "browser_search"}],
+        tool_choice="required",
+        max_tokens=700,
+    )
+    answer = re.sub(r"【[^】]*】", "", r.choices[0].message.content or "").strip()
+    return answer or web_search(question)
+
+
+@tool(group="web", ack="Reading the page.", url="Full http(s) URL")
+def fetch_webpage(url: str) -> str:
+    """Download a web page and return its readable text. Use to read an article or docs."""
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    r = _HTTP.get(url, timeout=12)
+    r.raise_for_status()
+    text = re.sub(r"(?is)<(script|style|noscript|svg).*?</\1>", " ", r.text)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+@tool(location="City name, e.g. 'Lisbon'")
 def get_weather(location: str) -> str:
-    try:
-        r = requests.get(f"https://wttr.in/{location}?format=j1", timeout=10)
-        r.raise_for_status()
-        cur = r.json()["current_condition"][0]
-        return (
-            f"{location}: {cur['weatherDesc'][0]['value']}, "
-            f"{cur['temp_C']}°C (feels {cur['FeelsLikeC']}°C), "
-            f"humidity {cur['humidity']}%, wind {cur['windspeedKmph']} km/h"
-        )
-    except Exception as e:
-        return f"Weather lookup failed: {e}"
+    """Current weather and today's forecast for a city."""
+    r = _HTTP.get(f"https://wttr.in/{quote(location)}?format=j1", timeout=10)
+    r.raise_for_status()
+    data = r.json()
+    cur = data["current_condition"][0]
+    today = data.get("weather", [{}])[0]
+    return (
+        f"{location}: {cur['weatherDesc'][0]['value'].strip()}, {cur['temp_C']}°C "
+        f"(feels {cur['FeelsLikeC']}°C), humidity {cur['humidity']}%, "
+        f"wind {cur['windspeedKmph']} km/h. Today: {today.get('mintempC', '?')}–"
+        f"{today.get('maxtempC', '?')}°C."
+    )
 
 
 # =====================================================================
 # macOS SYSTEM
 # =====================================================================
 
+@tool(name="App name, e.g. 'Safari', 'Spotify', 'Visual Studio Code'")
 def open_app(name: str) -> str:
-    try:
-        subprocess.run(["open", "-a", name], check=True, timeout=10)
-        return f"Opened {name}."
-    except Exception as e:
-        return f"Could not open {name}: {e}"
+    """Open (or bring forward) a macOS application."""
+    r = _sh(["open", "-a", name], timeout=10)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip() or f"no app named {name}")
+    return f"Opened {name}."
 
 
+@tool()
 def open_url(url: str) -> str:
-    try:
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
-        subprocess.run(["open", url], check=True, timeout=10)
-        return f"Opened {url}."
-    except Exception as e:
-        return f"Could not open URL: {e}"
+    """Open a website in the default browser."""
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    _sh(["open", url], timeout=10).check_returncode()
+    return f"Opened {url}."
 
 
+@tool(group="system")
 def get_system_info() -> str:
-    try:
-        battery = subprocess.run(
-            ["pmset", "-g", "batt"], capture_output=True, text=True
-        ).stdout.strip()
-        uptime = subprocess.run(
-            ["uptime"], capture_output=True, text=True
-        ).stdout.strip()
-        disk = subprocess.run(
-            ["df", "-h", "/"], capture_output=True, text=True
-        ).stdout.strip()
-        return f"Battery:\n{battery}\n\nUptime:\n{uptime}\n\nDisk:\n{disk}"
-    except Exception as e:
-        return f"System info error: {e}"
+    """Battery level, uptime, and free disk space of this Mac."""
+    batt = _sh(["pmset", "-g", "batt"]).stdout.strip()
+    up = _sh(["uptime"]).stdout.strip()
+    disk = _sh(["df", "-h", "/"]).stdout.strip().splitlines()[-1]
+    return f"Battery: {batt}\nUptime: {up}\nDisk (/): {disk}"
 
 
+@tool(level="Volume 0–100. Use 0 to mute.")
+def set_volume(level: int) -> str:
+    """Set the Mac's output volume."""
+    level = max(0, min(100, level))
+    _osa(f"set volume output volume {level}" + (" with output muted" if level == 0 else " without output muted"))
+    return f"Volume set to {level}%."
+
+
+@tool(action="What to do", app="Which player to control")
+def media_control(action: Literal["play", "pause", "playpause", "next", "previous", "now_playing"],
+                  app: Literal["Music", "Spotify"] = "Music") -> str:
+    """Control music playback in Apple Music or Spotify, or say what's playing."""
+    cmd = {"play": "play", "pause": "pause", "playpause": "playpause",
+           "next": "next track", "previous": "previous track"}
+    if action == "now_playing":
+        return _osa(f'tell application "{app}" to return (name of current track) & " — " & (artist of current track)')
+    _osa(f'tell application "{app}" to {cmd[action]}')
+    return f"{app}: {action}."
+
+
+@tool(group="system", title="Short title", message="Notification body")
+def notify(title: str, message: str) -> str:
+    """Show a macOS notification banner."""
+    _osa(f'display notification {_as_str(message)} with title {_as_str(title)}')
+    return "Notification shown."
+
+
+def _as_str(s: str) -> str:
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+_timers: dict[int, tuple[str, float, threading.Timer]] = {}
+
+
+@tool(minutes="Duration in minutes (decimals allowed, e.g. 0.5)", label="What the timer is for")
+def set_timer(minutes: float, label: str = "Timer") -> str:
+    """Start a countdown. When it ends Ivy announces it out loud and shows a notification."""
+    from . import voice
+    seconds = max(1.0, minutes * 60)
+    tid = max(_timers, default=0) + 1
+
+    def fire():
+        _timers.pop(tid, None)
+        try:
+            notify("IVY-1", f"{label} — time's up.")
+        except Exception:
+            pass
+        voice.chime()
+        voice.speak_async(f"{label} is done.")
+
+    t = threading.Timer(seconds, fire)
+    t.daemon = True
+    t.start()
+    _timers[tid] = (label, time.time() + seconds, t)
+    return f"Timer #{tid} '{label}' set for {minutes:g} min."
+
+
+@tool(group="system")
+def list_timers() -> str:
+    """List running timers and how long is left on each."""
+    if not _timers:
+        return "No timers running."
+    now = time.time()
+    return "\n".join(f"#{i} {lbl}: {max(0, int(end - now)) // 60}m {max(0, int(end - now)) % 60}s left"
+                     for i, (lbl, end, _) in _timers.items())
+
+
+@tool(group="system")
+def cancel_timer(timer_id: int) -> str:
+    """Cancel a running timer by its number."""
+    entry = _timers.pop(timer_id, None)
+    if not entry:
+        return f"No timer #{timer_id}."
+    entry[2].cancel()
+    return f"Cancelled timer #{timer_id} ({entry[0]})."
+
+
+@tool(group="system")
 def get_clipboard() -> str:
-    try:
-        out = subprocess.run(
-            ["pbpaste"], capture_output=True, text=True
-        ).stdout[:2000]
-        return out or "(clipboard is empty)"
-    except Exception as e:
-        return f"Clipboard read error: {e}"
+    """Read the text currently on the clipboard."""
+    return _sh(["pbpaste"]).stdout[:3000] or "(clipboard is empty)"
 
 
+@tool(group="system")
 def set_clipboard(text: str) -> str:
-    try:
-        subprocess.run(["pbcopy"], input=text, text=True, check=True)
-        return "Copied to clipboard."
-    except Exception as e:
-        return f"Clipboard write error: {e}"
+    """Copy text to the clipboard."""
+    subprocess.run(["pbcopy"], input=text, text=True, check=True)
+    return "Copied to clipboard."
 
 
+@tool(group="system")
 def take_screenshot() -> str:
-    path = Path.home() / "Desktop" / f"mae_screenshot_{int(time.time())}.png"
-    try:
-        subprocess.run(["screencapture", "-x", str(path)], check=True)
-        return f"Saved screenshot to {path}"
-    except Exception as e:
-        return f"Screenshot error: {e}"
+    """Capture the whole screen and save it to the Desktop."""
+    path = Path.home() / "Desktop" / f"ivy_screenshot_{int(time.time())}.png"
+    _sh(["screencapture", "-x", str(path)]).check_returncode()
+    return f"Saved screenshot to {path}"
+
+
+@tool(group="system")
+def list_installed_apps() -> str:
+    """List applications installed in /Applications and ~/Applications."""
+    found = sorted(
+        item.stem
+        for d in (Path("/Applications"), Path.home() / "Applications") if d.exists()
+        for item in d.iterdir() if item.suffix == ".app" and not item.name.startswith(".")
+    )
+    return ", ".join(found) or "(no apps found)"
 
 
 # =====================================================================
 # FILES & SHELL
 # =====================================================================
 
+@tool(group="files", confirm="shell", timeout=60, command="zsh command line")
 def run_shell(command: str) -> str:
-    try:
-        r = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=30
-        )
-        out = (r.stdout or "") + (r.stderr or "")
-        return out.strip()[:2000] or "(no output)"
-    except Exception as e:
-        return f"Shell error: {e}"
+    """Run a shell command on this Mac and return its output. Use for anything the
+    other tools don't cover (git, file ops, system queries, scripts)."""
+    r = _sh(["/bin/zsh", "-lc", command], timeout=55)
+    out = ((r.stdout or "") + (r.stderr or "")).strip() or "(no output)"
+    return out if r.returncode == 0 else f"exit {r.returncode}\n{out}"
 
 
-def list_files(path: str = ".") -> str:
-    try:
-        p = Path(path).expanduser()
-        items = sorted(p.iterdir())[:50]
-        return "\n".join(
-            f"{'DIR ' if i.is_dir() else 'FILE'} {i.name}" for i in items
-        ) or "(empty)"
-    except Exception as e:
-        return f"List error: {e}"
+@tool(group="files", path="Directory, '~' allowed")
+def list_files(path: str = "~") -> str:
+    """List files in a directory."""
+    p = Path(path).expanduser()
+    items = sorted(p.iterdir(), key=lambda i: (not i.is_dir(), i.name.lower()))
+    shown = [f"{'📁' if i.is_dir() else '📄'} {i.name}" for i in items if not i.name.startswith(".")]
+    return "\n".join(shown[:100]) or "(empty)"
 
 
+@tool(group="files", path="File path, '~' allowed")
 def read_file(path: str) -> str:
-    try:
-        return Path(path).expanduser().read_text()[:3000]
-    except Exception as e:
-        return f"Read error: {e}"
+    """Read a text file."""
+    return Path(path).expanduser().read_text(errors="replace")
 
 
 # =====================================================================
-# HOMEBREW — install, search, list
+# SOFTWARE — one tool per verb, the manager is a parameter
 # =====================================================================
 
-def install_brew_package(package: str) -> str:
-    if not package or not package.strip():
-        return "No package name given."
-
-    pkg = package.strip()
-
-    r = subprocess.run(
-        ["brew", "install", pkg],
-        capture_output=True, text=True, timeout=600,
-    )
-    if r.returncode == 0:
-        return f"Installed '{pkg}' via Homebrew formula.\n{r.stdout[-800:]}"
-
-    r2 = subprocess.run(
-        ["brew", "install", "--cask", pkg],
-        capture_output=True, text=True, timeout=600,
-    )
-    if r2.returncode == 0:
-        return f"Installed '{pkg}' via Homebrew cask.\n{r2.stdout[-800:]}"
-
-    return (
-        f"Could not install '{pkg}'.\n"
-        f"formula stderr: {r.stderr[-400:]}\n"
-        f"cask stderr:    {r2.stderr[-400:]}"
-    )
+Manager = Literal["brew", "cask", "pip", "npm", "appstore", "app"]
 
 
+@tool(group="software", confirm="action", ack="Installing that now.", timeout=600,
+      name="Package or app name", manager="brew = CLI tools and most apps (tries cask too), "
+      "pip = Python, npm = Node, appstore = opens the App Store page")
+def install_package(name: str, manager: Manager = "brew") -> str:
+    """Install software on this Mac. Use for 'install X', 'get me X', 'I need X'."""
+    name = name.strip()
+    if manager == "appstore":
+        _sh(["open", f"macappstore://search.itunes.apple.com/WebObjects/MZSearch.woa/wa/search?q={quote(name)}"])
+        return f"Opened the App Store search for '{name}' — click Get there."
+    cmds = {
+        "brew": [["brew", "install", name], ["brew", "install", "--cask", name]],
+        "cask": [["brew", "install", "--cask", name]],
+        "pip": [["python3", "-m", "pip", "install", "--user", name]],
+        "npm": [["npm", "install", "-g", name]],
+    }.get(manager)
+    if not cmds:
+        return f"Can't install with '{manager}'."
+    errors = []
+    for cmd in cmds:
+        r = _sh(cmd, timeout=590)
+        if r.returncode == 0:
+            return f"Installed {name} ({' '.join(cmd[:3])})."
+        errors.append(r.stderr.strip()[-300:])
+    return f"Install of {name} failed:\n" + "\n".join(errors)
+
+
+@tool(group="software", confirm="action", timeout=300,
+      manager="'app' moves a .app from /Applications to the Trash; others use that package manager")
+def uninstall_package(name: str, manager: Manager = "brew") -> str:
+    """Uninstall software from this Mac."""
+    name = name.strip()
+    if manager in ("app", "appstore"):
+        app = name if name.endswith(".app") else name + ".app"
+        for d in (Path("/Applications"), Path.home() / "Applications"):
+            if (d / app).exists():
+                _osa(f'tell application "Finder" to delete POSIX file {_as_str(str(d / app))}', timeout=30)
+                return f"Moved {app} to the Trash."
+        return f"{app} not found."
+    cmds = {
+        "brew": [["brew", "uninstall", name], ["brew", "uninstall", "--cask", name]],
+        "cask": [["brew", "uninstall", "--cask", name]],
+        "pip": [["python3", "-m", "pip", "uninstall", "-y", name]],
+        "npm": [["npm", "uninstall", "-g", name]],
+    }[manager]
+    for cmd in cmds:
+        if _sh(cmd, timeout=290).returncode == 0:
+            return f"Uninstalled {name}."
+    return f"Could not uninstall {name} with {manager}."
+
+
+@tool(group="software", timeout=40)
 def brew_search(query: str) -> str:
-    try:
-        r = subprocess.run(
-            ["brew", "search", query],
-            capture_output=True, text=True, timeout=30,
-        )
-        out = (r.stdout or r.stderr).strip()
-        return out[:1500] or "(no results)"
-    except Exception as e:
-        return f"brew search error: {e}"
-
-
-def list_installed_brew() -> str:
-    try:
-        f = subprocess.run(
-            ["brew", "list", "--formula"], capture_output=True, text=True
-        ).stdout.strip()
-        c = subprocess.run(
-            ["brew", "list", "--cask"], capture_output=True, text=True
-        ).stdout.strip()
-        return f"Formulae:\n{f or '(none)'}\n\nCasks:\n{c or '(none)'}"
-    except Exception as e:
-        return f"brew list error: {e}"
-
-# =====================================================================
-# PACKAGE MANAGERS — pip / npm / mas (Mac App Store)
-# =====================================================================
-
-def pip_install(package: str) -> str:
-    """Install a Python package with pip (user-level)."""
-    if not package.strip():
-        return "No package given."
-    r = subprocess.run(
-        ["pip", "install", "--user", package.strip()],
-        capture_output=True, text=True, timeout=600,
-    )
-    if r.returncode == 0:
-        return f"Installed '{package}' with pip.\n{r.stdout[-600:]}"
-    return f"pip install failed:\n{r.stderr[-600:]}"
-
-
-def pip_uninstall(package: str) -> str:
-    if not package.strip():
-        return "No package given."
-    r = subprocess.run(
-        ["pip", "uninstall", "-y", package.strip()],
-        capture_output=True, text=True, timeout=120,
-    )
-    if r.returncode == 0:
-        return f"Uninstalled '{package}' with pip."
-    return f"pip uninstall failed:\n{r.stderr[-600:]}"
-
-
-def npm_install(package: str, global_: bool = True) -> str:
-    if not package.strip():
-        return "No package given."
-    cmd = ["npm", "install"]
-    if global_:
-        cmd.append("-g")
-    cmd.append(package.strip())
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if r.returncode == 0:
-        return f"Installed '{package}' with npm."
-    return f"npm install failed:\n{r.stderr[-600:]}"
-
-
-def npm_uninstall(package: str, global_: bool = True) -> str:
-    if not package.strip():
-        return "No package given."
-    cmd = ["npm", "uninstall"]
-    if global_:
-        cmd.append("-g")
-    cmd.append(package.strip())
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if r.returncode == 0:
-        return f"Uninstalled '{package}' with npm."
-    return f"npm uninstall failed:\n{r.stderr[-600:]}"
-
-
-def mas_install(app_name: str) -> str:
-    """
-    Open the Mac App Store to the given app's page (or search results).
-    No CLI needed. User clicks Install in the App Store UI.
-    """
-    name = (app_name or "").strip()
-    if not name:
-        return "No app name given."
-
-    # URL-encode the name for the search query
-    from urllib.parse import quote
-    url = f"macappstore://search.itunes.apple.com/WebObjects/MZSearch.woa/wa/search?q={quote(name)}"
-
-    try:
-        subprocess.run(["open", url], check=True, timeout=10)
-        return (
-            f"Opened the App Store to search for '{name}'. "
-            f"Click Install there — I'll wait."
-        )
-    except Exception as e:
-        return f"Could not open App Store: {e}"
-
-# =====================================================================
-# UNINSTALL — universal
-# =====================================================================
-
-def uninstall_brew_package(package: str) -> str:
-    """Uninstall a Homebrew formula or cask."""
-    if not package.strip():
-        return "No package given."
-    pkg = package.strip()
-
-    # Try formula first
-    r = subprocess.run(
-        ["brew", "uninstall", pkg],
-        capture_output=True, text=True, timeout=300,
-    )
-    if r.returncode == 0:
-        return f"Uninstalled formula '{pkg}'."
-
-    # Try cask
-    r2 = subprocess.run(
-        ["brew", "uninstall", "--cask", pkg],
-        capture_output=True, text=True, timeout=300,
-    )
-    if r2.returncode == 0:
-        return f"Uninstalled cask '{pkg}'."
-
-    return (
-        f"Could not uninstall '{pkg}'.\n"
-        f"formula stderr: {r.stderr[-300:]}\n"
-        f"cask stderr:    {r2.stderr[-300:]}"
-    )
-
-
-def uninstall_app(app_name: str) -> str:
-    """
-    Uninstall any .app from /Applications or ~/Applications.
-    Moves it to the Trash (recoverable — safer than rm -rf).
-    """
-    if not app_name.strip():
-        return "No app name given."
-
-    name = app_name.strip()
-    if not name.endswith(".app"):
-        name = name + ".app"
-
-    candidates = [
-        Path("/Applications") / name,
-        Path.home() / "Applications" / name,
-    ]
-
-    for path in candidates:
-        if path.exists():
-            r = subprocess.run(
-                ["osascript", "-e",
-                 f'tell application "Finder" to delete POSIX file "{path}"'],
-                capture_output=True, text=True, timeout=30,
-            )
-            if r.returncode == 0:
-                return f"Moved '{path.name}' to Trash."
-            return f"Could not delete: {r.stderr[-300:]}"
-
-    return f"'{app_name}' not found in /Applications or ~/Applications."
-
-
-def list_installed_apps() -> str:
-    """List .app bundles in /Applications and ~/Applications."""
-    found = []
-    for d in [Path("/Applications"), Path.home() / "Applications"]:
-        if d.exists():
-            for item in sorted(d.iterdir()):
-                if item.suffix == ".app":
-                    found.append(item.stem)
-    if not found:
-        return "(no apps found)"
-    return "\n".join(found[:80])
+    """Search Homebrew for installable packages and apps."""
+    r = _sh(["brew", "search", query], timeout=35)
+    return (r.stdout or r.stderr).strip()[:1500] or "(no results)"
 
 
 # =====================================================================
 # MEMORY
 # =====================================================================
 
+@tool(text="The fact, short and in third person, e.g. 'Romeu prefers metric units'",
+      tags="Optional comma-separated keywords")
 def remember(text: str, tags: str = "") -> str:
-    """Stores a fact, preference, or historical context about the user."""
-    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
-    entry = get_store().add(text, tag_list)
+    """Save a lasting fact about the user (name, preference, project, date). Recall first
+    if it might contradict an existing memory."""
+    entry = get_store().add(text, [t.strip() for t in tags.split(",") if t.strip()])
     if "error" in entry:
         return entry["error"]
-    return f"Remembered: '{entry['text']}' (id={entry['id']})"
+    return f"Remembered (id={entry['id']})."
 
-def recall(query: str) -> str:
-    """Searches memory for entries related to the query term."""
-    results = get_store().search(query)
-    if not results:
-        return "No matching memories found."
-    return "\n".join(f"[{m['id']}] {m['text']}" for m in results)
 
+@tool(query="Keywords; leave empty to list every memory")
+def recall(query: str = "") -> str:
+    """Search long-term memory. With an empty query, lists all memories."""
+    store = get_store()
+    results = store.search(query, limit=10) if query.strip() else store.all()
+    return "\n".join(f"[{m['id']}] {m['text']}" for m in results) or "No matching memories."
+
+
+@tool(group="memory", memory_id_or_text="A memory id like 'm_a1b2c3d4', or words matching the memories to delete")
 def forget(memory_id_or_text: str) -> str:
-    """Delete a memory by id, or by text search (matches any)."""
+    """Delete memories by id or by matching text. Handles every match in one call."""
     store = get_store()
-    arg = (memory_id_or_text or "").strip()
-    if not arg:
-        return "Nothing to forget — no id or text provided."
-
-    # 1) Try as an exact id first.
+    arg = memory_id_or_text.strip()
     if arg.startswith("m_") and store.forget(arg):
-        return f"Forgotten by id: {arg}"
-
-    # 2) Otherwise search for matching memories and delete all of them.
+        return f"Forgotten {arg}."
     matches = store.search(arg, limit=20)
-    if not matches:
-        return f"No memory matches '{arg}'. (Nothing to forget.)"
-
-    deleted = []
-    for m in matches:
-        if store.forget(m["id"]):
-            deleted.append(f"[{m['id']}] {m['text']}")
-
-    return "Forgotten:\n" + "\n".join(deleted)
-
-def list_memories() -> str:
-    """Retrieves all current stored memories."""
-    mems = get_store().all()
-    if not mems:
-        return "No memories saved yet."
-    return "\n".join(f"[{m['id']}] {m['text']}" for m in mems)
-
-def forget_all(*_args, **_kwargs) -> str:
-    store = get_store()
-    count = store.count()
-    store._data["memories"] = []
-    store._save()
-    return (
-        f"Cleared all {count} memories. "
-        "This operation is COMPLETE. Do NOT call forget_all again."
-    )
+    deleted = [f"[{m['id']}] {m['text']}" for m in matches if store.forget(m["id"])]
+    return ("Forgotten:\n" + "\n".join(deleted)) if deleted else f"No memory matches '{arg}'."
 
 
-# =====================================================================
-# META
-# =====================================================================
-
-def list_tools() -> str:
-    return ", ".join(sorted(TOOL_FUNCTIONS.keys()))
+@tool(group="memory", confirm="action")
+def forget_all() -> str:
+    """Erase EVERY memory. Only when the user explicitly asks to wipe all memories."""
+    return f"Cleared all {get_store().clear()} memories."
 
 
-# =====================================================================
-# SCHEMAS
-# =====================================================================
+# Register the macOS control tools (AppleScript, UI, keyboard, browser JS).
+from . import tools_mac  # noqa: E402,F401
 
-TOOL_SCHEMAS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_current_time",
-            "description": "Get the current local date and time.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "calculate",
-            "description": "Evaluate a math expression, e.g. '2+2', 'sqrt(16)*3'.",
-            "parameters": {
-                "type": "object",
-                "properties": {"expression": {"type": "string"}},
-                "required": ["expression"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_wikipedia",
-            "description": "Search Wikipedia for a topic.",
-            "parameters": {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Look up factual information on the web.",
-            "parameters": {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_weather",
-            "description": "Get current weather for a city.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "location": {"type": "string", "description": "City name"}
-                },
-                "required": ["location"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "open_app",
-            "description": "Open a macOS application by name (Safari, Spotify, Finder, etc.).",
-            "parameters": {
-                "type": "object",
-                "properties": {"name": {"type": "string"}},
-                "required": ["name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "open_url",
-            "description": "Open a URL in the default browser.",
-            "parameters": {
-                "type": "object",
-                "properties": {"url": {"type": "string"}},
-                "required": ["url"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_system_info",
-            "description": "Get battery, uptime and disk usage for this Mac.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_clipboard",
-            "description": "Read the current text contents of the clipboard.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_clipboard",
-            "description": "Copy given text to the clipboard.",
-            "parameters": {
-                "type": "object",
-                "properties": {"text": {"type": "string"}},
-                "required": ["text"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "take_screenshot",
-            "description": "Capture the screen and save it to the Desktop.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_shell",
-            "description": "Run a shell command on the user's Mac and return the output.",
-            "parameters": {
-                "type": "object",
-                "properties": {"command": {"type": "string"}},
-                "required": ["command"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_files",
-            "description": "List files in a directory.",
-            "parameters": {
-                "type": "object",
-                "properties": {"path": {"type": "string", "default": "."}},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read the contents of a text file.",
-            "parameters": {
-                "type": "object",
-                "properties": {"path": {"type": "string"}},
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "install_brew_package",
-            "description": (
-                "Install a program on this Mac via Homebrew. Use for any request "
-                "like 'install X', 'get me X', 'I need X'. Works for CLI tools "
-                "(ffmpeg, jq) and GUI apps (firefox, docker, spotify)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "package": {"type": "string", "description": "Homebrew package name"}
-                },
-                "required": ["package"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "brew_search",
-            "description": "Search Homebrew for installable packages by name or keyword.",
-            "parameters": {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_installed_brew",
-            "description": "List Homebrew packages currently installed on this Mac.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_tools",
-            "description": "Return the full list of tools MAE-2 can use right now.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-        {
-        "type": "function",
-        "function": {
-            "name": "remember",
-            "description": (
-                "Save a fact about the user or their world to long-term memory. "
-                "Use whenever the user says 'remember...', shares a preference, "
-                "a name, a project, a date, or anything that should persist "
-                "between sessions. Optionally tag with comma-separated keywords."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "The fact to remember"},
-                    "tags": {"type": "string", "description": "Optional comma-separated tags"}
-                },
-                "required": ["text"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "recall",
-            "description": "Search long-term memory for facts matching a query.",
-            "parameters": {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "forget",
-            "description": (
-                "Delete one or more memories. Pass either a memory id like "
-                "'m_a1b2c3d4', OR a text/query term like 'name' or 'preferences' — "
-                "in which case all matching memories are deleted. "
-                "Call this AT MOST ONCE per user request; it handles all matches itself."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "memory_id_or_text": {"type": "string"}
-                },
-                "required": ["memory_id_or_text"],
-            },
-        },
-    },
-
-
-    {
-        "type": "function",
-        "function": {
-            "name": "list_memories",
-            "description": "List every fact MAE-2 has in long-term memory.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "forget_all",
-            "description": (
-                "Delete EVERY memory in one shot. Use ONLY when the user "
-                "explicitly says to erase/clear/reset ALL memories. "
-                "Call this EXACTLY ONCE per user request — it is idempotent "
-                "and doing it twice is a mistake."
-            ),
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "pip_install",
-            "description": "Install a Python package with pip (user-level).",
-            "parameters": {
-                "type": "object",
-                "properties": {"package": {"type": "string"}},
-                "required": ["package"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "pip_uninstall",
-            "description": "Uninstall a Python package with pip.",
-            "parameters": {
-                "type": "object",
-                "properties": {"package": {"type": "string"}},
-                "required": ["package"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "npm_install",
-            "description": "Install an npm package (global by default).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "package": {"type": "string"},
-                    "global_": {"type": "boolean", "default": True},
-                },
-                "required": ["package"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "npm_uninstall",
-            "description": "Uninstall an npm package (global by default).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "package": {"type": "string"},
-                    "global_": {"type": "boolean", "default": True},
-                },
-                "required": ["package"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "mas_install",
-            "description": (
-                "Install an app from the Mac App Store by name. "
-                "Requires `mas` (install it via install_brew_package('mas'))."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {"app_name": {"type": "string"}},
-                "required": ["app_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "uninstall_brew_package",
-            "description": "Uninstall a Homebrew formula or cask.",
-            "parameters": {
-                "type": "object",
-                "properties": {"package": {"type": "string"}},
-                "required": ["package"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "uninstall_app",
-            "description": (
-                "Move a .app to the Trash (recoverable). Use for any app "
-                "installed manually or dragged to /Applications."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {"app_name": {"type": "string"}},
-                "required": ["app_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_installed_apps",
-            "description": "List installed macOS applications in /Applications.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-]
-
-
-
-# =====================================================================
-# REGISTRY
-# =====================================================================
-
-TOOL_FUNCTIONS = {
-    "get_current_time": get_current_time,
-    "calculate": calculate,
-    "search_wikipedia": search_wikipedia,
-    "web_search": web_search,
-    "get_weather": get_weather,
-    "open_app": open_app,
-    "open_url": open_url,
-    "get_system_info": get_system_info,
-    "get_clipboard": get_clipboard,
-    "set_clipboard": set_clipboard,
-    "take_screenshot": take_screenshot,
-    "run_shell": run_shell,
-    "list_files": list_files,
-    "read_file": read_file,
-    "install_brew_package": install_brew_package,
-    "brew_search": brew_search,
-    "list_installed_brew": list_installed_brew,
-    "list_tools": list_tools,
-    "remember": remember,
-    "recall": recall,
-    "forget": forget,
-    "list_memories": list_memories,
-    "forget": forget,
-    "forget_all": forget_all,
-    "pip_install": pip_install,
-    "pip_uninstall": pip_uninstall,
-    "npm_install": npm_install,
-    "npm_uninstall": npm_uninstall,
-    "mas_install": mas_install,
-    "uninstall_brew_package": uninstall_brew_package,
-    "uninstall_app": uninstall_app,
-    "list_installed_apps": list_installed_apps,
-}
-
-
-# Tools that require explicit user confirmation before running
-CONFIRM_TOOLS = {"run_shell"}
-
-TOOL_SCHEMAS.extend(MAC_SCHEMAS)
-TOOL_FUNCTIONS.update(MAC_FUNCS)
-
-# =====================================================================
-# SELF-CHECK
-# =====================================================================
 
 if __name__ == "__main__":
-    print(f"tools.py OK — {len(TOOL_FUNCTIONS)} tools registered:")
-    for name in sorted(TOOL_FUNCTIONS):
-        print(f"  • {name}")
+    print(f"{len(TOOLS)} tools registered:")
+    for t in TOOLS.values():
+        print(f"  • {t.name:20} {t.confirm or ''}")

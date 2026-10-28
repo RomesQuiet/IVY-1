@@ -1,4 +1,4 @@
-# mae/voice.py
+# ivy/voice.py
 import re
 
 from . import audio
@@ -18,12 +18,11 @@ from . import config
 
 _client = OpenAI(base_url=config.GROQ_BASE_URL, api_key=config.GROQ_API_KEY)
 
-TTS_VOICE = "Kate (Enhanced)"   # try also: Serena, Karen, Moira, Tessa, Fiona
 SAMPLE_RATE = 16000
 FRAME_MS = 30
 FRAME_SIZE = int(SAMPLE_RATE * FRAME_MS / 1000)  # 480 samples per frame
 
-_TMP_WAV = Path(tempfile.gettempdir()) / "mae_input.wav"
+_TMP_WAV = Path(tempfile.gettempdir()) / "ivy_input.wav"
 
 # Say any of these to leave voice mode.
 
@@ -94,7 +93,7 @@ def should_exit_voice(text: str) -> bool:
 
 
 def record_until_silence(
-    silence_sec: float = 1.0,
+    silence_sec: float = 0.8,
     max_sec: float = 12.0,
     start_timeout_sec: float = 6.0,
     aggressiveness: int = 3,          # 3 = strict, filters background noise
@@ -215,6 +214,7 @@ def transcribe(wav_path: str) -> str:
             model=config.WHISPER_MODEL,
             file=f,
             language="en",
+            prompt="Ivy, OK Ivy, Romeu.",   # spelling hints for names
             temperature=0.0,
         )
 
@@ -239,55 +239,87 @@ def transcribe(wav_path: str) -> str:
 
     return text
 
-# ---------- speech (queued, serial, one process per sentence) ----------
+# ---------- speech (queued, serial, one persistent synthesizer) ----------
+#
+# `say` reloads the voice for every sentence (~1.4 s before each one on this Mac).
+# A single NSSpeechSynthesizer keeps the voice loaded: speech starts in a few ms
+# and stops instantly. Falls back to `say` if AppKit isn't available.
 
 import queue as _queue
 import threading as _threading
 
 _say_queue = _queue.Queue()
 _say_thread = None
-_say_lock = _threading.Lock()
-_current_proc = None
+_generation = 0                  # bumped by stop_speaking(); older sentences are dropped
+_busy = _threading.Event()        # set while a sentence is being spoken
+_MD = re.compile(r"[*#`_>|~]+|\[(.*?)\]\(.*?\)|https?://\S+")
+
+
+def _make_synth():
+    try:
+        import AppKit
+    except Exception:
+        return None
+    wanted = getattr(config, "TTS_VOICE", "")
+    voice_id = None
+    for v in AppKit.NSSpeechSynthesizer.availableVoices():
+        name = AppKit.NSSpeechSynthesizer.attributesForVoice_(v).get("VoiceName", "")
+        if name == wanted or (voice_id is None and name.split(" (")[0] == wanted.split(" (")[0]):
+            voice_id = v
+    return AppKit.NSSpeechSynthesizer.alloc().initWithVoice_(voice_id)
+
+
+def _speak_with_say(text: str, gen: int):
+    proc = subprocess.Popen(["say", "-v", getattr(config, "TTS_VOICE", "Samantha"), text])
+    while proc.poll() is None:
+        if gen != _generation:
+            proc.kill()
+            return
+        time.sleep(0.02)
 
 
 def _say_worker():
-    global _current_proc
+    synth = _make_synth()          # the worker thread owns the synthesizer
     while True:
-        text = _say_queue.get()
-        if text is None:
-            break
+        gen, text = _say_queue.get()
         try:
-            with _say_lock:
-                _current_proc = subprocess.Popen(
-                    ["say", "-v", getattr(config, "TTS_VOICE", "Karen (Enhanced)"), text]
-                )
-            _current_proc.wait()
+            if gen != _generation:
+                continue
+            _busy.set()
+            if synth is None:
+                _speak_with_say(text, gen)
+            else:
+                synth.startSpeakingString_(text)
+                t0 = time.time()
+                while not synth.isSpeaking() and time.time() - t0 < 1.0:
+                    time.sleep(0.005)
+                while synth.isSpeaking():
+                    if gen != _generation:
+                        synth.stopSpeaking()
+                        break
+                    time.sleep(0.02)
         except Exception as e:
-            print(f"[say error] {e}")
+            print(f"[speech error] {e}")
         finally:
-            with _say_lock:
-                _current_proc = None
+            _busy.clear()
             _say_queue.task_done()
 
 
 def _ensure_say_thread():
     global _say_thread
     if _say_thread is None or not _say_thread.is_alive():
-        _say_thread = _threading.Thread(target=_say_worker, daemon=True)
+        _say_thread = _threading.Thread(target=_say_worker, daemon=True, name="tts")
         _say_thread.start()
 
+
 def speak_async(text: str, voice: str = None):
-    if not text:
+    if not text or getattr(config, "MUTED", False):
         return
-    if getattr(config, "MUTED", False):
-        return
-    clean = text.replace("*", "").replace("#", "").replace("`", "").strip()
+    clean = re.sub(r"\s+", " ", _MD.sub(lambda m: m.group(1) or "", text)).strip()
     if not clean:
         return
     _ensure_say_thread()
-    _say_queue.put(clean)
-
-
+    _say_queue.put((_generation, clean))
 
 
 def speak(text: str, voice: str = None):
@@ -297,39 +329,37 @@ def speak(text: str, voice: str = None):
 
 
 def stop_speaking():
-    """Kill the current utterance and drop anything queued."""
-    global _current_proc
-    with _say_lock:
-        if _current_proc and _current_proc.poll() is None:
-            try:
-                _current_proc.kill()
-            except Exception:
-                pass
-        _current_proc = None
-
-    while not _say_queue.empty():
+    """Cut the current sentence and drop anything queued."""
+    global _generation
+    _generation += 1
+    while True:
         try:
             _say_queue.get_nowait()
             _say_queue.task_done()
-        except Exception:
+        except _queue.Empty:
             break
+
+
+def warm_up():
+    """Load the voice and open the Groq connection before the first request."""
+    _ensure_say_thread()
+    try:
+        _client.models.list()
+    except Exception:
+        pass
 
 def wait_until_silent(timeout: float = 30.0):
     """Block until `say` has finished the whole queue. Prevents self-echo."""
     start = time.time()
     while time.time() - start < timeout:
-        with _say_lock:
-            proc_alive = _current_proc is not None and _current_proc.poll() is None
-        if not proc_alive and _say_queue.empty():
-            time.sleep(0.3)   # small grace period to let the speaker go quiet
+        if not is_speaking():
+            time.sleep(0.25)   # small grace period to let the speaker go quiet
             return
-        time.sleep(0.05)
+        time.sleep(0.03)
 
 def is_speaking() -> bool:
     """True if `say` is currently speaking or has sentences queued."""
-    with _say_lock:
-        proc_alive = _current_proc is not None and _current_proc.poll() is None
-    return proc_alive or not _say_queue.empty()
+    return _busy.is_set() or _say_queue.unfinished_tasks > 0
 
 def monitor_for_bargein(
     aggressiveness: int = 3,

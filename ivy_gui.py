@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""IVY-1 v1.7.0 — GUI entry point. Single source of truth."""
+"""IVY-1 — GUI entry point. Single source of truth."""
 
 import json
 import sys
@@ -9,8 +9,11 @@ from pathlib import Path
 
 import webview
 
-from ivy import config, voice, audio
-from ivy.brain import Brain
+from ivy import config, audio
+
+# Loaded in the background by IvyApp._boot so the window appears immediately
+# (openai + sounddevice + the tool stack take several seconds to import).
+voice = None
 
 UI_PATH = Path(__file__).parent / "ivy" / "ui" / "index.html"
 
@@ -76,7 +79,8 @@ class LogTee:
 
 class IvyApp:
     def __init__(self):
-        self.brain = Brain()
+        self.brain = None
+        self.booted = threading.Event()
         self.window = None
         self._ready = False
         self._pending = []
@@ -119,9 +123,43 @@ class IvyApp:
     def _state(self, s):
         self._js(f"setState({json.dumps(s)})")
 
+    # -----------------------------------------------------------------
+    # Startup (background)
+    # -----------------------------------------------------------------
+
+    def _boot(self):
+        global voice
+        t0 = time.time()
+        try:
+            from ivy import voice as _voice
+            from ivy.brain import Brain
+            voice = _voice
+            self.brain = Brain(confirm=self._confirm)
+        except Exception as e:
+            print(f"[startup error] {e}")
+            self._js(f"window.showError({json.dumps('Startup failed: ' + str(e))})")
+            return
+        self.booted.set()
+        print(f"✅ Ready ({time.time() - t0:.1f}s)")
+        self._js("window.onReady && window.onReady()")
+        voice.warm_up()   # load the voice + open the Groq connection
+
+    def _confirm(self, title: str, detail: str) -> bool:
+        """Ask Romeu before a risky tool runs (native macOS dialog)."""
+        if not self.window:
+            return False
+        try:
+            return bool(self.window.create_confirmation_dialog(title, detail))
+        except Exception as e:
+            print(f"[confirm error] {e}")
+            return False
+
     # =================================================================
     # JS → Python
     # =================================================================
+
+    def is_ready(self):
+        return self.booted.is_set()
 
     def send(self, text: str):
         if not text or not text.strip():
@@ -146,14 +184,17 @@ class IvyApp:
     def _slash(self, text: str):
         cmd, _, arg = text.partition(" ")
         arg = arg.strip()
+        if cmd not in ("/help", "/quit") and not self.booted.wait(timeout=30):
+            print("Still starting up — try again in a moment.")
+            return {"ok": False}
 
         if cmd == "/wake":
             self.set_wake(True)
         elif cmd in ("/sleep", "/text"):
             self.set_wake(False)
         elif cmd == "/reset":
-            self.brain.messages = self.brain.messages[:1]
-            print("Memory cleared.")
+            self.brain.reset()
+            print("Conversation cleared.")
         elif cmd == "/memories":
             from ivy.memory import get_store
             mems = get_store().all()
@@ -212,20 +253,22 @@ class IvyApp:
                 if not self.audio_running:
                     return {"ok": True}
                 self.audio_running = False
-                voice.stop_speaking()
+                if voice:
+                    voice.stop_speaking()
                 audio.abort_wake()
                 self._js("window.setWakeUI(false)")
                 print("💤 Wake mode OFF.")
         return {"ok": True}
 
     def set_model(self, name):
+        self.booted.wait()
         self.brain.force_model = name
         print(f"Model: {name or 'auto'}")
         return {"ok": True}
 
     def set_mute(self, muted: bool):
         config.MUTED = bool(muted)
-        if config.MUTED:
+        if config.MUTED and voice:
             voice.stop_speaking()
         return {"ok": True}
 
@@ -234,6 +277,7 @@ class IvyApp:
     # =================================================================
 
     def _audio_loop(self):
+        self.booted.wait()
         try:
             from ivy.wake import WakeListener
             listener = WakeListener(
@@ -294,6 +338,9 @@ class IvyApp:
     # =================================================================
 
     def _do_chat(self, text: str, from_wake: bool = False):
+        if not self.booted.is_set():
+            self._js("window.setStatus('⏳ Starting up — your message will run in a moment…')")
+            self.booted.wait()
         with self._chat_lock:
             try:
                 # Stop any ongoing speech so replies don't overlap
@@ -365,6 +412,7 @@ def main():
 
     window.events.loaded += on_loaded
 
+    threading.Thread(target=app._boot, daemon=True, name="boot").start()
     webview.start(debug=False)
 
 

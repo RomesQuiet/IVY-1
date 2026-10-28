@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """IVY-1 — Personal AI Assistant (Groq-powered, streaming)."""
 
+import threading
+
 from ivy.brain import Brain
 from ivy import config, voice
 
 BANNER = r"""
-  __  __    _    _____     ____
- |  \/  |  / \  | ____|   |___ \
- | |\/| | / _ \ |  _|       __) |
- | |  | |/ ___ \| |___     / __/
- |_|  |_/_/   \_\_____|   |_____|
-       Personal AI Assistant — v2.3.5
+  ___ __     __ __   __       _
+ |_ _|\ \   / / \ \ / /      / |
+  | |  \ \ / /   \ V /_____  | |
+  | |   \ V /     | |_____| | |
+ |___|   \_/      |_|       |_|
+       Personal AI Assistant
 """
 
 
@@ -19,6 +21,7 @@ def main():
     print("Commands:  /voice  /wake  /text  /reset  /memories  /model <name>  /quit\n")
 
     brain = Brain()
+    threading.Thread(target=voice.warm_up, daemon=True).start()
     mode = "text"          # "text" | "voice" | "wake"
     listener = None
     awake = False          # sub-state for wake mode: False=sleeping, True=conversing
@@ -127,8 +130,8 @@ def main():
                 print("Goodbye.")
                 break
             elif cmd == "/reset":
-                brain.messages = brain.messages[:1]
-                print("Memory cleared.")
+                brain.reset()
+                print("Conversation cleared.")
             elif cmd == "/memories":
                 from ivy.memory import get_store
                 mems = get_store().all()

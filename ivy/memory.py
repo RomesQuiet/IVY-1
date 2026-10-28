@@ -84,6 +84,13 @@ class MemoryStore:
             return True
         return False
 
+    def clear(self) -> int:
+        """Delete every memory. Returns how many were removed."""
+        count = len(self._data["memories"])
+        self._data["memories"] = []
+        self._save()
+        return count
+
 _store = None
 def get_store() -> MemoryStore:
     global _store
