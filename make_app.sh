@@ -9,7 +9,9 @@ set -e
 PROJECT_DIR="/Users/romeu/IVY-1"
 VENV_PY="$PROJECT_DIR/.venv/bin/python3"
 ENTRY="$PROJECT_DIR/ivy_gui.py"
-APP_DIR="$HOME/Applications/Ivy.app"
+LAUNCHER_SRC="$PROJECT_DIR/launcher.m"
+PY_FRAMEWORK="/Library/Frameworks/Python.framework/Versions/3.11"
+APP_DIR="/Applications/Ivy.app"
 LOG_FILE="$HOME/Library/Logs/Ivy.log"
 
 # Icon: try the two known locations, first match wins
@@ -45,6 +47,11 @@ if [ ! -f "$ENTRY" ]; then
     exit 1
 fi
 
+if ! command -v clang >/dev/null || [ ! -f "$PY_FRAMEWORK/Python" ]; then
+    echo "❌ Need clang (xcode-select --install) and Python 3.11 from python.org"
+    exit 1
+fi
+
 # ============================================================
 # CLEAN OLD BUNDLES
 # ============================================================
@@ -61,29 +68,18 @@ mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
 # ============================================================
-# LAUNCHER (absolute paths — resolved now, not at runtime)
+# EXECUTABLE (native, runs Python in its own process)
 # ============================================================
+# This must not be a script that exec's Python: macOS would then see Python.app,
+# not Ivy, and refuse the microphone silently, with no pop-up. See launcher.m.
 
-cat > "$APP_DIR/Contents/MacOS/Ivy" <<LAUNCHER
-#!/bin/bash
-LOG_FILE="$LOG_FILE"
-
-mkdir -p "\$(dirname "\$LOG_FILE")"
-cd "$PROJECT_DIR" || exit 1
-
-# rotate log at 2 MB
-if [ -f "\$LOG_FILE" ] && [ "\$(stat -f%z "\$LOG_FILE")" -gt 2097152 ]; then
-    mv "\$LOG_FILE" "\$LOG_FILE.old"
-fi
-
-echo "" >> "\$LOG_FILE"
-echo "=== Ivy launch: \$(date) ===" >> "\$LOG_FILE"
-
-# Run the GUI directly with the venv python — no activate needed
-exec "$VENV_PY" "$ENTRY" >> "\$LOG_FILE" 2>&1
-LAUNCHER
-
-chmod +x "$APP_DIR/Contents/MacOS/Ivy"
+clang "$LAUNCHER_SRC" -o "$APP_DIR/Contents/MacOS/Ivy" -fobjc-arc -O2 \
+    -I"$PY_FRAMEWORK/Headers" \
+    -DIVY_PROJECT="\"$PROJECT_DIR\"" \
+    -DIVY_LOG="\"$LOG_FILE\"" \
+    -DIVY_PYTHON="\"$VENV_PY\"" \
+    -DIVY_ENTRY="\"$ENTRY\"" \
+    -framework Foundation -framework AVFoundation "$PY_FRAMEWORK/Python"
 
 # ============================================================
 # ICON
@@ -163,12 +159,10 @@ codesign --force --deep --sign - "$APP_DIR" 2>/dev/null || \
 echo ""
 echo "✅ Built: $APP_DIR"
 echo ""
-echo "Test it now:"
-echo "  $APP_DIR/Contents/MacOS/Ivy"
+echo "Open it from Finder or Spotlight (not from a terminal, or macOS will ask on the"
+echo "terminal's behalf). The first launch asks for the microphone."
 echo ""
-echo "Then double-click from Finder or Spotlight."
-echo ""
-echo "If mic doesn't work: System Settings → Privacy & Security → Microphone"
-echo "  → drag Ivy.app from Finder into the list → toggle ON"
+echo "Rebuilding can make macOS forget Ivy's permissions, so only rebuild when this"
+echo "script or launcher.m changes. Python changes don't need a rebuild."
 echo ""
 echo "Logs: $LOG_FILE"
