@@ -4,7 +4,8 @@
 import threading
 
 from ivy.brain import Brain
-from ivy import config, voice
+from ivy import config, mcp_client, senses, voice
+from ivy.toolkit import describe_call
 
 BANNER = r"""
   ___ __     __ __   __       _
@@ -18,10 +19,14 @@ BANNER = r"""
 
 def main():
     print(BANNER)
-    print("Commands:  /voice  /wake  /text  /reset  /memories  /model <name>  /quit\n")
+    print("Commands:  /voice  /wake  /text  /reset  /memories  /model <name>  /doctor  /quit\n")
 
     brain = Brain()
-    threading.Thread(target=voice.warm_up, daemon=True).start()
+    for warm_up in (voice.warm_up, senses.warm_up, mcp_client.load_all):
+        threading.Thread(target=warm_up, daemon=True).start()
+    for line in senses.doctor():
+        if "OFF" in line or "MISSING" in line:
+            print(f"⚠️  {line}")
     mode = "text"          # "text" | "voice" | "wake"
     listener = None
     awake = False          # sub-state for wake mode: False=sleeping, True=conversing
@@ -153,6 +158,9 @@ def main():
                 mode = "text"
                 awake = False
                 print("⌨️  Text mode ON.\n")
+            elif cmd == "/doctor":
+                for line in senses.doctor() + [f"MCP — {m}" for m in mcp_client.status()]:
+                    print(f"  {line}")
             elif cmd == "/model":
                 name = arg.strip()
                 if not name or name == "auto":
@@ -184,7 +192,7 @@ def main():
         try:
             brain.chat(
                 user_input,
-                on_tool=lambda name, args: print(f"\n  ⚙️  {name}({args})"),
+                on_tool=lambda name, args: print(f"\n  {describe_call(name, args)}"),
                 on_token=stream_token,
                 on_sentence=on_sentence,
                 on_status=status,

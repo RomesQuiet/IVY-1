@@ -2,6 +2,7 @@
 """IVY-1 — GUI entry point. Single source of truth."""
 
 import json
+import re
 import sys
 import threading
 import time
@@ -142,7 +143,23 @@ class IvyApp:
         self.booted.set()
         print(f"✅ Ready ({time.time() - t0:.1f}s)")
         self._js("window.onReady && window.onReady()")
+        self._check_senses()
         voice.warm_up()   # load the voice + open the Groq connection
+        from ivy import mcp_client, senses
+        senses.warm_up()
+        mcp_client.load_all()
+
+    def _check_senses(self):
+        """Tell Romeu if macOS is keeping Ivy blind, with a one-click fix."""
+        from ivy import senses
+        missing = [k for k, ok in senses.permissions().items() if not ok]
+        if missing:
+            self._js(f"window.showPermissions({json.dumps(missing)})")
+
+    def fix_permissions(self):
+        from ivy import senses
+        senses.request_permissions()
+        return {"ok": True}
 
     def _confirm(self, title: str, detail: str) -> bool:
         """Ask Romeu before a risky tool runs (native macOS dialog)."""
@@ -160,6 +177,14 @@ class IvyApp:
 
     def is_ready(self):
         return self.booted.is_set()
+
+    def stop(self):
+        """Stop button / Esc: cancel the running request and stop talking."""
+        if self.brain:
+            self.brain.cancel()
+        if voice:
+            voice.stop_speaking()
+        return {"ok": True}
 
     def send(self, text: str):
         if not text or not text.strip():
@@ -214,6 +239,13 @@ class IvyApp:
             if config.MUTED:
                 voice.stop_speaking()
             print(f"Voice {'muted' if config.MUTED else 'unmuted'}")
+        elif cmd == "/doctor":
+            from ivy import mcp_client, senses
+            for line in senses.doctor():
+                print(line)
+            for line in mcp_client.status():
+                print(f"MCP — {line}")
+            print(self.brain and __import__("ivy.router", fromlist=["get_pool"]).get_pool().status())
         elif cmd == "/help":
             for line in [
                 "/wake         — wake-word mode ON",
@@ -222,6 +254,7 @@ class IvyApp:
                 "/memories     — list long-term memories",
                 "/model <name> — force a model, or 'auto'",
                 "/mute         — toggle voice output",
+                "/doctor       — what Ivy can see and do right now",
                 "/quit         — close IVY-1",
             ]:
                 print(line)
@@ -349,11 +382,18 @@ class IvyApp:
                 def on_token(t):
                     self._js(f"window.appendToken({json.dumps(t)})")
 
+                from ivy.toolkit import describe_call
+
                 def on_tool(name, args):
-                    self._js(
-                        f"window.showTool("
-                        f"{json.dumps(name)}, {json.dumps(json.dumps(args))})"
-                    )
+                    detail = args.get("command") or args.get("code") or ""
+                    self._js(f"window.showTool({json.dumps(name)}, "
+                             f"{json.dumps(describe_call(name, args))}, {json.dumps(detail[:2000])})")
+
+                def on_tool_result(name, args, result):
+                    ok = not re.match(r"(\w+ failed:|NOT DONE|Unknown tool|Missing required|Stop:|"
+                                      r"AppleScript error|exit \d+)", result)
+                    self._js(f"window.toolDone({json.dumps(name)}, {json.dumps(ok)}, "
+                             f"{json.dumps(result[:600])})")
 
                 def on_status(msg):
                     self._js(f"window.setStatus({json.dumps(msg)})")
@@ -363,6 +403,7 @@ class IvyApp:
                     text,
                     on_token=on_token,
                     on_tool=on_tool,
+                    on_tool_result=on_tool_result,
                     on_status=on_status,
                     on_sentence=voice.speak_async,  # always speak
                 )
@@ -371,13 +412,11 @@ class IvyApp:
                 if reply:
                     print(f"IVY-1: {reply}")
 
-                # Barge-in only when awake
-                if reply and voice.is_speaking():
-                    if from_wake:
-                        if voice.monitor_for_bargein():
-                            print("  🔇 (interrupted — go ahead)")
-                    else:
-                        voice.wait_until_silent()
+                # In wake mode, listen for "stop"/barge-in while she talks. When typing,
+                # don't block: the next message simply cuts the speech off.
+                if reply and from_wake and voice.is_speaking():
+                    if voice.monitor_for_bargein():
+                        print("  🔇 (interrupted — go ahead)")
             except Exception as e:
                 print(f"[chat error] {e}")
                 self._js(f"window.showError({json.dumps(str(e))})")

@@ -34,6 +34,7 @@ pyobjc-framework-Cocoa==12.2.2
 pyobjc-framework-Quartz==12.2.2
 pyobjc-framework-Security==12.2.2
 pyobjc-framework-UniformTypeIdentifiers==12.2.2
+pyobjc-framework-Vision==12.2.2
 pyobjc-framework-WebKit==12.2.2
 pyperclip==1.11.0
 PyRect==0.2.0

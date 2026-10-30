@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>IVY-2</title>
+<title>IVY-1</title>
 <style>
   :root {
     --bg: #0a0e14;
@@ -100,13 +100,37 @@
   .msg.user { color: var(--user); }
   .msg.user::before { content: "You › "; color: var(--text-dim); }
   .msg.assistant { color: var(--text); }
-  .msg.assistant::before { content: "MAE-2 › "; color: var(--accent); font-weight: 600; }
+  .msg.assistant::before { content: "Ivy › "; color: var(--accent); font-weight: 600; }
   .msg.tool {
-    color: var(--text-dim); font-size: 11px; padding-left: 8px;
-    border-left: 2px solid var(--accent-dim); margin: 6px 0 6px 8px;
+    display: flex; flex-direction: column; gap: 4px;
+    color: var(--text-dim); font-size: 12px; margin: 4px 0 4px 8px;
+    padding: 5px 10px; border-left: 2px solid var(--accent-dim);
+    background: rgba(77, 208, 225, 0.04); border-radius: 0 6px 6px 0;
+    cursor: pointer; white-space: normal; max-width: 760px;
   }
+  .msg.tool .row { display: flex; align-items: center; gap: 8px; }
+  .msg.tool .status { width: 14px; text-align: center; flex: none; }
+  .msg.tool.running .status::before { content: "◌"; display: inline-block; animation: spin 1s linear infinite; color: #ffb74d; }
+  .msg.tool.ok .status::before { content: "✓"; color: var(--ok); }
+  .msg.tool.fail { border-left-color: var(--error); }
+  .msg.tool.fail .status::before { content: "✗"; color: var(--error); }
+  .msg.tool .more {
+    display: none; white-space: pre-wrap; font-size: 11px; color: var(--text-dim);
+    border-top: 1px solid var(--border); padding-top: 4px; max-height: 220px; overflow: auto;
+  }
+  .msg.tool.open .more { display: block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .typing { color: var(--text-dim); }
+  .typing span { animation: blink 1.2s infinite; }
+  .typing span:nth-child(2) { animation-delay: 0.2s; }
+  .typing span:nth-child(3) { animation-delay: 0.4s; }
+  #suggestions { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 16px; }
+  #suggestions button { font-size: 12px; padding: 6px 12px; border-radius: 14px; }
+  #stopBtn { display: none; color: var(--error); }
+  body.busy #stopBtn { display: inline-block; }
   .msg.system { color: var(--text-dim); font-size: 11px; font-style: italic; }
   .msg.error { color: var(--error); }
+  .msg.note { color: #ffb74d; }
 
   .cursor {
     display: inline-block; width: 8px; background: var(--accent);
@@ -199,9 +223,8 @@
   <span class="state-label" id="mode">text</span>
   <select id="model" title="Model routing">
     <option value="auto">auto</option>
-    <option value="openai/gpt-oss-20b">oss-20b</option>
-    <option value="qwen/qwen3.6-27b">qwen3.1-27b</option>
-    <option value="openai/gpt-oss-120b">oss-120b</option>
+    <option value="openai/gpt-oss-120b">gpt-oss-120b</option>
+    <option value="openai/gpt-oss-20b">gpt-oss-20b (faster)</option>
   </select>
   <span class="state-label" id="stateLabel">idle</span>
   <span class="indicator idle" id="indicator"></span>
@@ -212,7 +235,8 @@
   <div id="chat-wrap">
     <div id="chat"></div>
     <footer>
-      <input id="input" type="text" placeholder="Ask Ivy anything..." autofocus />
+      <input id="input" type="text" placeholder="Ask Ivy anything — or tell her to do something…" autofocus />
+      <button id="stopBtn" class="icon-btn" title="Stop (Esc)">■</button>
       <button id="wakeBtn" class="icon-btn" title="Wake-word mode">💤</button>
       <button id="muteBtn" class="icon-btn" title="Mute voice">🔊</button>
     </footer>
@@ -277,7 +301,25 @@ window.setStatus = (msg) => {
   appendConsole(msg);
 };
 
+function clearTyping() {
+  if (window._typingEl) { window._typingEl.remove(); window._typingEl = null; }
+}
+
+function showTyping() {
+  clearTyping();
+  const div = addMsg('assistant typing', '');
+  div.innerHTML = '<span>●</span><span>●</span><span>●</span>';
+  window._typingEl = div;
+}
+
+function setBusy(on) {
+  document.body.classList.toggle('busy', on);
+  inputEl.disabled = on;
+  if (on) { setState('thinking'); showTyping(); }
+}
+
 window.appendToken = (t) => {
+  clearTyping();
   if (!window._currentEl) {
     window._currentEl = addMsg('assistant', '');
     window._currentText = '';
@@ -289,35 +331,57 @@ window.appendToken = (t) => {
 };
 
 window.endMessage = () => {
+  clearTyping();
   if (window._currentEl) {
     window._currentEl.textContent = window._currentText;
     window._currentEl = null;
     window._currentText = '';
   }
+  setBusy(false);
   setState('idle');
-  inputEl.disabled = false;
   inputEl.focus();
 };
 
-window.showTool = (name, args) => {
-  const argStr = JSON.stringify(args);
+// Tool chips: "▶️ YouTube · gotham chess" with a spinner, then ✓ or ✗.
+// Click a chip to see the code it ran and what came back.
+window.showTool = (name, label, detail) => {
+  clearTyping();
+  window._currentEl = null;          // text after a tool starts a new bubble
   const div = document.createElement('div');
-  div.className = 'msg tool';
-  div.textContent = `⚙️  ${name} ${argStr}`;
+  div.className = 'msg tool running';
+  div.dataset.name = name;
+  div.innerHTML = '<div class="row"><span class="status"></span><span class="label"></span></div>' +
+                  '<div class="more"></div>';
+  div.querySelector('.label').textContent = label;
+  div.querySelector('.more').textContent = detail || '';
+  div.addEventListener('click', () => div.classList.toggle('open'));
   chatEl.appendChild(div);
   scrollBottom();
+  if (document.body.classList.contains('busy')) showTyping();
+};
+
+window.toolDone = (name, ok, preview) => {
+  const chip = [...chatEl.querySelectorAll('.msg.tool.running')].find(d => d.dataset.name === name);
+  if (!chip) return;
+  chip.classList.remove('running');
+  chip.classList.add(ok ? 'ok' : 'fail');
+  const more = chip.querySelector('.more');
+  more.textContent = (more.textContent ? more.textContent + '\n\n→ ' : '→ ') + preview;
 };
 
 window.showError = (msg) => {
-  addMsg('error', '[error] ' + msg);
+  clearTyping();
+  let friendly = msg;
+  if (/rate.?limit|quota|413|429/i.test(msg)) friendly = 'Out of free model quota for a moment — try again shortly.';
+  else if (/connection|resolve|network|timed out/i.test(msg)) friendly = "I can't reach the internet right now.";
+  addMsg('error', friendly);
 };
 
 window._simulate_user = function(text) {
-  const div = document.createElement('div');
-  div.className = 'msg user';
-  div.textContent = text;
-  chatEl.appendChild(div);
-  chatEl.scrollTop = chatEl.scrollHeight;
+  const sug = document.getElementById('suggestions');
+  if (sug) sug.remove();
+  addMsg('user', text);
+  setBusy(true);
 };
 
 // Keeps the wake button in sync when wake mode changes from Python
@@ -327,23 +391,42 @@ window.setWakeUI = function(on) {
   modeEl.textContent = on ? 'wake' : 'text';
 };
 
+// macOS is keeping Ivy blind: say so, and offer the fix.
+window.showPermissions = (missing) => {
+  const what = missing.map(m => m === 'screen' ? 'see the screen' : 'click and type').join(' or ');
+  const div = addMsg('note', `macOS isn't letting Ivy ${what} yet, so she can't check her own work. `);
+  const b = document.createElement('button');
+  b.textContent = 'Fix this';
+  b.addEventListener('click', async () => {
+    try { await pywebview.api.fix_permissions(); } catch (e) {}
+    b.remove();
+    div.append('Switch Ivy (or Python / Terminal) on in the settings that opened, then quit and reopen Ivy.');
+  });
+  div.appendChild(b);
+};
+
 window.beginMessage = function() {
   window._currentEl = null;
   window._currentText = '';
 };
 // ---------- actions ----------
-async function send() {
-  const text = inputEl.value.trim();
+async function send(textArg) {
+  const text = (textArg || inputEl.value).trim();
   if (!text) return;
   inputEl.value = '';
-  inputEl.disabled = true;
+  const sug = document.getElementById('suggestions');
+  if (sug) sug.remove();
   addMsg('user', text);
-  setState('thinking');
+  setBusy(true);
   try { await pywebview.api.send(text); }
   catch (e) {
     window.showError(String(e));
-    inputEl.disabled = false;
+    setBusy(false);
   }
+}
+
+async function stop() {
+  try { await pywebview.api.stop(); } catch (e) {}
 }
 
 inputEl.addEventListener('keydown', (e) => {
@@ -352,6 +435,8 @@ inputEl.addEventListener('keydown', (e) => {
     send();
   }
 });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') stop(); });
+document.getElementById('stopBtn').addEventListener('click', stop);
 
 wakeBtn.addEventListener('click', async () => {
   const active = wakeBtn.classList.toggle('active');
@@ -396,7 +481,17 @@ window.onReady = () => {
   if (readyShown) return;
   readyShown = true;
   if (window._bootMsg) window._bootMsg.remove();
-  addMsg('system', 'IVY-1 — ready. Type, or press the wake button and say "OK Ivy".');
+  addMsg('system', 'IVY-1 — ready. Type, or press 💤 and say "OK Ivy". Esc stops her.');
+  const sug = document.createElement('div');
+  sug.id = 'suggestions';
+  for (const q of ["What's the weather?", "Play lofi hip hop on YouTube", "Play Queen on Spotify",
+                   "Set a 10 minute timer for tea", "What's on my screen?", "What can you do?"]) {
+    const b = document.createElement('button');
+    b.textContent = q;
+    b.addEventListener('click', () => send(q));
+    sug.appendChild(b);
+  }
+  chatEl.appendChild(sug);
   setState('idle');
 };
 

@@ -1,2 +1,80 @@
 # Ivy
 
+A voice-and-text assistant for macOS that works like a coding agent on your whole Mac:
+it looks, acts, then checks what actually happened.
+
+```
+you ──▶ intents.py ──(instant: open, play, volume, timers, weather, time)──▶ done in ms, 0 tokens
+          │ not a simple command
+          ▼
+        senses.py  live reading of the Mac: front app, window, tab, music, volume
+          ▼
+        brain.py  agent loop ──▶ router.py picks the model with token budget left
+          │                       (waits out short limits, shrinks oversized requests)
+          │  every action comes back with "[Observed: what actually changed]"
+          ▼
+        toolkit.py  ~70 tools: core set always sent, groups unlocked by keywords
+          │          or by the model itself (use_tools)
+          ├─ tools.py        web, weather, apps, browser, shell, Python, files, packages, memory
+          ├─ tools_media.py  YouTube, Spotify / Apple Music
+          ├─ tools_life.py   Messages, Contacts, Mail, Calendar, Reminders, Notes, system switches
+          ├─ tools_mac.py    AppleScript, UI clicks, keyboard, browser JavaScript
+          ├─ skills/*.py     abilities Ivy wrote herself (create_skill) or you added
+          └─ mcp_client.py   tools from any MCP server in mcp_servers.json
+```
+
+## Run
+
+```bash
+source .venv/bin/activate && python ivy_gui.py     # window
+python ivy.py                                     # terminal
+```
+
+Esc or the ■ button stops a request. 💤 turns on "OK Ivy" wake-word mode.
+`/doctor` shows what she can see and do right now.
+
+## Giving Ivy eyes and hands
+
+macOS blocks both until you allow them, for whichever app launches her (Terminal, Python
+or Ivy.app). Ivy offers a **Fix this** button when they're off; restart her afterwards.
+
+| Permission | What it enables |
+|---|---|
+| Screen Recording | window titles, `read_screen`, `see_screen`, `click_text` |
+| Accessibility | clicking, typing, key presses |
+
+- `read_screen` uses Apple's on-device OCR. Nothing leaves the Mac.
+- `see_screen` uploads a screenshot to Groq so a vision model can look at it. It asks once
+  per session. Set `CLOUD_VISION = "off"` in `config.py` to disable it.
+
+## MCP servers
+
+Create `mcp_servers.json` in the project root, same format as Claude Desktop (local/stdio
+servers). Each server's tools load on demand and ask before acting unless the server has
+`"trusted": true`. See the top of `ivy/mcp_client.py`.
+
+## Keys (`.env`)
+
+| Key | Needed | What it adds |
+|---|---|---|
+| `GROQ_API_KEY` | yes | the models (free tier: 8k tokens/minute per model) |
+| `CEREBRAS_API_KEY` | optional | much more room before Ivy has to wait (free at cloud.cerebras.ai) |
+| `OPENROUTER_API_KEY` | optional | another free fallback |
+| `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` | optional | exact song search on Spotify (free at developer.spotify.com); without it Ivy finds artists and albums |
+
+## Safety
+
+Tools that change things (AppleScript, UI control, messages, email, events, installs,
+power, new skills) ask first — once per session by default (`ACTION_MODE` in
+`config.py`). `run_shell` / `run_python` ask only if `CONFIRM_SHELL = True`.
+
+Web pages, screens and emails can contain text aimed at Ivy, and in testing the model did
+try to obey it. So once a request has read outside content, shell, Python, AppleScript,
+messages and other powerful tools ask every time, whatever the settings above say. Clicks
+and typing are exempt so screen work isn't one dialog per click.
+
+## Teaching Ivy
+
+Ask her: *"learn a skill that …"*. She writes `skills/<name>.py`, it's validated by
+importing it, and the new tool is usable immediately and after restarts. You can
+write skills by hand too — see `skills/crypto_prices.py`.

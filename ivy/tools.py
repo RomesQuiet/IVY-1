@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 import requests
 
-from . import config
+from . import config, senses
 from .memory import get_store
 from .toolkit import TOOLS, tool
 
@@ -84,9 +84,16 @@ def _wikipedia(query: str) -> str:
         timeout=8,
     )
     hits = r.json().get("query", {}).get("search", [])
-    return "\n".join(
-        f"{h['title']}: {html.unescape(re.sub(r'<[^>]+>', '', h['snippet']))}" for h in hits
-    ) or "No results."
+    if not hits:
+        return "No results."
+    # the top article's opening paragraph has the key facts; snippets usually don't
+    intro = _HTTP.get("https://en.wikipedia.org/w/api.php", timeout=8, params={
+        "action": "query", "prop": "extracts", "exintro": 1, "explaintext": 1,
+        "exchars": 900, "titles": hits[0]["title"], "format": "json", "redirects": 1,
+    }).json().get("query", {}).get("pages", {})
+    text = next(iter(intro.values()), {}).get("extract", "")
+    others = "; ".join(h["title"] for h in hits[1:])
+    return f"{hits[0]['title']}: {text}" + (f"\n(Also: {others})" if others else "")
 
 
 def _news(query: str) -> str:
@@ -98,7 +105,7 @@ def _news(query: str) -> str:
                      for it in items) or "No news results."
 
 
-@tool(query="Search keywords, e.g. 'F1 race winner', 'latest iPhone model'")
+@tool(untrusted=True, query="Search keywords, e.g. 'F1 race winner', 'latest iPhone model'")
 def web_search(query: str) -> str:
     """Fast web lookup (~1 s): latest news headlines with dates plus Wikipedia summaries.
     Use for anything current or factual you aren't sure of."""
@@ -114,7 +121,7 @@ def web_search(query: str) -> str:
     return "\n\n".join(parts)
 
 
-@tool(group="web", ack="Let me dig into that.", timeout=60,
+@tool(group="web", ack="Let me dig into that.", timeout=60, untrusted=True,
       question="The full question to research")
 def deep_web_search(question: str) -> str:
     """Slow (~10 s) full web research that reads real pages and returns a sourced answer.
@@ -133,7 +140,7 @@ def deep_web_search(question: str) -> str:
     return answer or web_search(question)
 
 
-@tool(group="web", ack="Reading the page.", url="Full http(s) URL")
+@tool(group="web", ack="Reading the page.", untrusted=True, url="Full http(s) URL")
 def fetch_webpage(url: str) -> str:
     """Download a web page and return its readable text. Use to read an article or docs."""
     if not url.startswith(("http://", "https://")):
@@ -145,14 +152,17 @@ def fetch_webpage(url: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-@tool(location="City name, e.g. 'Lisbon'")
-def get_weather(location: str) -> str:
-    """Current weather and today's forecast for a city."""
+@tool(location="City name; leave empty for where Romeu is now")
+def get_weather(location: str = "") -> str:
+    """Current weather and today's forecast."""
     r = _HTTP.get(f"https://wttr.in/{quote(location)}?format=j1", timeout=10)
     r.raise_for_status()
     data = r.json()
     cur = data["current_condition"][0]
     today = data.get("weather", [{}])[0]
+    if not location:
+        area = (data.get("nearest_area") or [{}])[0]
+        location = (area.get("areaName") or [{}])[0].get("value", "Here")
     return (
         f"{location}: {cur['weatherDesc'][0]['value'].strip()}, {cur['temp_C']}°C "
         f"(feels {cur['FeelsLikeC']}°C), humidity {cur['humidity']}%, "
@@ -165,22 +175,116 @@ def get_weather(location: str) -> str:
 # macOS SYSTEM
 # =====================================================================
 
-@tool(name="App name, e.g. 'Safari', 'Spotify', 'Visual Studio Code'")
+_APP_ALIASES = {
+    "vscode": "Visual Studio Code", "vs code": "Visual Studio Code", "code": "Visual Studio Code",
+    "chrome": "Google Chrome", "brave": "Brave Browser", "settings": "System Settings",
+    "system preferences": "System Settings", "app store": "App Store", "files": "Finder",
+    "itunes": "Music", "apple music": "Music", "facetime": "FaceTime", "imessage": "Messages",
+}
+
+
+def installed_apps() -> dict[str, str]:
+    """lowercase name → real app name, for every .app Ivy can open."""
+    apps = {}
+    for d in (Path("/Applications"), Path("/System/Applications"),
+              Path("/System/Applications/Utilities"), Path.home() / "Applications"):
+        if d.exists():
+            for item in d.iterdir():
+                if item.suffix == ".app" and not item.name.startswith("."):
+                    apps[item.stem.lower()] = item.stem
+    return apps
+
+
+def default_browser() -> str:
+    if config.BROWSER:
+        return config.BROWSER
+    r = _sh(["defaults", "read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers"])
+    m = re.search(r'LSHandlerRoleAll = "([^"]+)";\s*LSHandlerURLScheme = https;', r.stdout)
+    bundle = m.group(1) if m else ""
+    return {"com.brave.browser": "Brave Browser", "com.google.chrome": "Google Chrome",
+            "org.mozilla.firefox": "Firefox", "company.thebrowser.browser": "Arc",
+            "com.microsoft.edgemac": "Microsoft Edge"}.get(bundle, "Safari")
+
+
+def resolve_app(name: str) -> str | None:
+    """Best installed app for a spoken name ('vs code', 'browser', 'spotify'…)."""
+    key = name.lower().strip().removesuffix(" app").strip()
+    if key in ("browser", "web browser", "internet", "default browser", "the browser"):
+        return default_browser()
+    key = _APP_ALIASES.get(key, key).lower()
+    apps = installed_apps()
+    if key in apps:
+        return apps[key]
+    starts = [real for low, real in apps.items() if low.startswith(key)]
+    return min(starts, key=len) if starts else None
+
+
+@tool(name="App name, e.g. 'Safari', 'Spotify', 'vs code', 'browser'")
 def open_app(name: str) -> str:
-    """Open (or bring forward) a macOS application."""
-    r = _sh(["open", "-a", name], timeout=10)
+    """Open (or bring forward) a macOS application. 'browser' opens Romeu's default browser."""
+    real = resolve_app(name)
+    if not real:
+        raise RuntimeError(f"no installed app matches '{name}'")
+    r = _sh(["open", "-a", real], timeout=10)
     if r.returncode != 0:
-        raise RuntimeError(r.stderr.strip() or f"no app named {name}")
-    return f"Opened {name}."
+        raise RuntimeError(r.stderr.strip() or f"couldn't open {real}")
+    if senses.wait_for_app(real):
+        return f"Opened {real}."
+    return f"Launched {real}, but no window has appeared yet."
 
 
-@tool()
-def open_url(url: str) -> str:
-    """Open a website in the default browser."""
+@tool(group="system")
+def quit_app(name: str) -> str:
+    """Quit a running app (it will still ask to save unsaved work)."""
+    real = resolve_app(name) or name
+    if not _running(real):
+        return f"{real} isn't running."
+    _osa(f"tell application {_as_str(real)} to quit")
+    for _ in range(12):
+        if not _running(real):
+            return f"Quit {real}."
+        time.sleep(0.25)
+    return f"Asked {real} to quit, but it's still open (it may be waiting on an unsaved-changes dialog)."
+
+
+def open_in_browser(url: str, browser: str = "") -> str:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-    _sh(["open", url], timeout=10).check_returncode()
-    return f"Opened {url}."
+    app = browser or config.BROWSER
+    cmd = ["open", "-a", resolve_app(app) or app, url] if app else ["open", url]
+    _sh(cmd, timeout=10).check_returncode()
+    return url
+
+
+@tool(browser="Only if Romeu names one, e.g. 'Safari'; otherwise his default browser")
+def open_url(url: str, browser: str = "") -> str:
+    """SHOW a web page to Romeu in his browser. Only when he asks to open/see something —
+    Ivy can't read what's opened; to read a page use fetch_webpage."""
+    return f"Opened {open_in_browser(url, browser)}."
+
+
+_SEARCH_SITES = {
+    "google": "https://www.google.com/search?q={}",
+    "youtube": "https://www.youtube.com/results?search_query={}",
+    "maps": "https://www.google.com/maps/search/{}",
+    "images": "https://www.google.com/search?tbm=isch&q={}",
+    "news": "https://news.google.com/search?q={}",
+    "wikipedia": "https://en.wikipedia.org/w/index.php?search={}",
+    "amazon": "https://www.amazon.com/s?k={}",
+    "github": "https://github.com/search?q={}",
+    "reddit": "https://www.reddit.com/search/?q={}",
+    "translate": "https://translate.google.com/?sl=auto&tl=en&text={}",
+}
+
+
+@tool(query="What to search for", site="Where to search")
+def browse(query: str, site: Literal["google", "youtube", "maps", "images", "news", "wikipedia",
+                                     "amazon", "github", "reddit", "translate"] = "google") -> str:
+    """SHOW search results in Romeu's browser (Google, Maps directions, Amazon, GitHub…).
+    Only when he wants to see them — Ivy can't read the page. To find an answer, use web_search."""
+    url = _SEARCH_SITES[site].format(quote(query))
+    open_in_browser(url)
+    return f"Opened {site} results for '{query}'."
 
 
 @tool(group="system")
@@ -192,24 +296,48 @@ def get_system_info() -> str:
     return f"Battery: {batt}\nUptime: {up}\nDisk (/): {disk}"
 
 
-@tool(level="Volume 0–100. Use 0 to mute.")
-def set_volume(level: int) -> str:
-    """Set the Mac's output volume."""
-    level = max(0, min(100, level))
-    _osa(f"set volume output volume {level}" + (" with output muted" if level == 0 else " without output muted"))
-    return f"Volume set to {level}%."
+@tool(group="media", level="Volume 0–100. Use 0 to mute.",
+      change="Instead of level: relative change, e.g. 15 (louder) or -15 (quieter)")
+def set_volume(level: int = -1, change: int = 0) -> str:
+    """Set or change the Mac's output volume."""
+    if change:
+        level = senses.get_volume()[0] + change
+    actual, muted = senses.set_volume(level)
+    return "Muted." if muted else f"Volume {actual}%."
 
 
-@tool(action="What to do", app="Which player to control")
-def media_control(action: Literal["play", "pause", "playpause", "next", "previous", "now_playing"],
-                  app: Literal["Music", "Spotify"] = "Music") -> str:
-    """Control music playback in Apple Music or Spotify, or say what's playing."""
-    cmd = {"play": "play", "pause": "pause", "playpause": "playpause",
-           "next": "next track", "previous": "previous track"}
+def _running(app: str) -> bool:
+    return _osa(f"application {_as_str(app)} is running") == "true"
+
+
+def active_player() -> str:
+    """Spotify if it's running, else Apple Music."""
+    return "Spotify" if _running("Spotify") or not _running("Music") and config.MUSIC_APP == "Spotify" else "Music"
+
+
+@tool(group="media", action="What to do", app="Leave as auto to use whichever player is running")
+def media_control(action: Literal["play", "pause", "next", "previous", "now_playing"],
+                  app: Literal["auto", "Music", "Spotify"] = "auto") -> str:
+    """Control music playback (Spotify or Apple Music), or say what's playing."""
+    app = active_player() if app == "auto" else app
     if action == "now_playing":
-        return _osa(f'tell application "{app}" to return (name of current track) & " — " & (artist of current track)')
+        if not _running(app):
+            return "Nothing is playing."
+        return "Now playing: " + _osa(f'tell application "{app}" to return (name of current track) & " by " & (artist of current track)')
+    if not _running(app):
+        return f"{app} isn't running, so there's nothing to {action}."
+    track = f'tell application "{app}" to return (name of current track) & " by " & (artist of current track)'
+    before = _osa(track)
+    cmd = {"play": "play", "pause": "pause", "next": "next track", "previous": "previous track"}
     _osa(f'tell application "{app}" to {cmd[action]}')
-    return f"{app}: {action}."
+    time.sleep(0.5)
+    state = _osa(f'tell application "{app}" to return player state as string')
+    now = _osa(track)
+    if action == "pause":
+        return "Paused." if state != "playing" else f"Tried to pause, but {app} is still playing."
+    if action == "play":
+        return f"Playing {now}." if state == "playing" else f"Tried to play, but {app} is {state}."
+    return f"Now playing {now}." if now != before else f"Sent {action}, but {app} is still on {now}."
 
 
 @tool(group="system", title="Short title", message="Notification body")
@@ -305,11 +433,27 @@ def list_installed_apps() -> str:
 # FILES & SHELL
 # =====================================================================
 
-@tool(group="files", confirm="shell", timeout=60, command="zsh command line")
+@tool(confirm="shell", timeout=60, command="zsh command line")
 def run_shell(command: str) -> str:
     """Run a shell command on this Mac and return its output. Use for anything the
     other tools don't cover (git, file ops, system queries, scripts)."""
     r = _sh(["/bin/zsh", "-lc", command], timeout=55)
+    out = ((r.stdout or "") + (r.stderr or "")).strip() or "(no output)"
+    return out if r.returncode == 0 else f"exit {r.returncode}\n{out}"
+
+
+@tool(confirm="shell", timeout=130, code="Python 3 source; print() what you want back")
+def run_python(code: str) -> str:
+    """Run a Python script on this Mac (requests, numpy and the standard library are
+    available). Use for calculations, data work, file processing, APIs — anything."""
+    import sys
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write(code)
+    try:
+        r = _sh([sys.executable, f.name], timeout=120, cwd=str(Path.home()))
+    finally:
+        Path(f.name).unlink(missing_ok=True)
     out = ((r.stdout or "") + (r.stderr or "")).strip() or "(no output)"
     return out if r.returncode == 0 else f"exit {r.returncode}\n{out}"
 
@@ -323,10 +467,57 @@ def list_files(path: str = "~") -> str:
     return "\n".join(shown[:100]) or "(empty)"
 
 
-@tool(group="files", path="File path, '~' allowed")
-def read_file(path: str) -> str:
-    """Read a text file."""
-    return Path(path).expanduser().read_text(errors="replace")
+@tool(group="files", path="File path, '~' allowed", start_line="First line to show, for long files")
+def read_file(path: str, start_line: int = 1) -> str:
+    """Read a text file with line numbers (about 150 lines at a time)."""
+    lines = Path(path).expanduser().read_text(errors="replace").splitlines()
+    start = max(1, start_line)
+    shown = lines[start - 1:start + 149]
+    out = "\n".join(f"{i:5} {line[:200]}" for i, line in enumerate(shown, start))
+    if start + 150 <= len(lines):
+        out += f"\n…({len(lines)} lines total; continue with start_line={start + 150})"
+    return out or "(empty file)"
+
+
+@tool(group="files", confirm="action", path="File to create or replace")
+def write_file(path: str, content: str) -> str:
+    """Create a file, or replace its whole contents."""
+    p = Path(path).expanduser()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content)
+    return f"Wrote {len(content)} chars to {p} (read back {p.stat().st_size} bytes)."
+
+
+@tool(group="files", confirm="action", old="Exact text to replace; must appear exactly once",
+      new="Replacement text")
+def edit_file(path: str, old: str, new: str) -> str:
+    """Change part of a file by exact text replacement. Read the file first."""
+    p = Path(path).expanduser()
+    text = p.read_text()
+    count = text.count(old)
+    if count != 1:
+        return f"Not changed: that text appears {count} times. Read the file and give an exact, unique match."
+    p.write_text(text.replace(old, new))
+    return f"Edited {p}."
+
+
+@tool(group="files", timeout=25, query="File name or words inside files (Spotlight)",
+      folder="Limit the search to this folder")
+def find_files(query: str, folder: str = "") -> str:
+    """Find files anywhere on this Mac by name or content using Spotlight."""
+    cmd = ["mdfind", query] + (["-onlyin", str(Path(folder).expanduser())] if folder else [])
+    hits = _sh(cmd, timeout=20).stdout.strip().splitlines()
+    return "\n".join(hits[:40]) + (f"\n…({len(hits)} total)" if len(hits) > 40 else "") if hits else "No files found."
+
+
+@tool(group="files", timeout=25, pattern="Text or regular expression", folder="Folder to search")
+def search_in_files(pattern: str, folder: str = "~") -> str:
+    """Search inside text files in a folder (like grep), with file names and line numbers."""
+    r = _sh(["grep", "-rnIE", "--exclude-dir=.git", "--exclude-dir=node_modules", "--exclude-dir=.venv",
+             "--exclude-dir=__pycache__", pattern, str(Path(folder).expanduser())], timeout=20)
+    lines = r.stdout.splitlines()
+    return "\n".join(line[:200] for line in lines[:40]) + \
+        (f"\n…({len(lines)} matches total)" if len(lines) > 40 else "") if lines else "No matches."
 
 
 # =====================================================================
@@ -434,8 +625,9 @@ def forget_all() -> str:
     return f"Cleared all {get_store().clear()} memories."
 
 
-# Register the macOS control tools (AppleScript, UI, keyboard, browser JS).
-from . import tools_mac  # noqa: E402,F401
+# Register the rest: macOS control, media, everyday apps, and learned skills.
+from . import skills, tools_life, tools_mac, tools_media  # noqa: E402,F401
+skills.load_all()
 
 
 if __name__ == "__main__":

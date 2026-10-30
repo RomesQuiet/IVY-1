@@ -29,9 +29,11 @@ class Tool:
     fn: typing.Callable
     schema: dict
     group: str             # only "core" tools are always sent; others load on demand
-    confirm: str | None    # None = safe, "action" = follows ACTION_MODE, "shell" = CONFIRM_SHELL
+    confirm: str | None    # None = safe, "action" = ACTION_MODE, "shell" = CONFIRM_SHELL,
+                           # "vision" = uploads a screenshot, needs CLOUD_VISION consent
     ack: str | None        # short phrase spoken in voice mode before a slow tool runs
     timeout: float
+    untrusted: bool = False   # returns outside content (web, screen, mail): data, not orders
 
 
 TOOLS: dict[str, Tool] = {}
@@ -40,23 +42,33 @@ TOOLS: dict[str, Tool] = {}
 # re-sent on every call. So each request gets the small core set plus the groups
 # its wording points at; the model can unlock any other group with use_tools.
 GROUPS = {
-    "web":      ("deep research, reading web pages",
-                 r"\b(research|in depth|deep|read (this|the|that)|article|page|url|link|website|https?://)"),
-    "system":   ("battery/disk, notifications, clipboard, screenshots, timers list/cancel, running/installed apps",
-                 r"\b(battery|disk|storage|uptime|notif|clipboard|copy|paste|screenshot|screen ?shot|"
-                 r"timers?|cancel|running|installed|apps|switch to|bring up|focus)\b"),
-    "files":    ("shell commands, list and read files",
-                 r"\b(shell|terminal|command|run |script|files?|folders?|director|desktop|downloads|"
-                 r"documents|read |git|python|process|kill|ls\b|cat\b|~/|/users/)"),
+    "media":    ("volume, pause/next/previous, what's playing, list YouTube results",
+                 r"\b(volume|louder|quieter|mute|pause|resume|skip|next|previous|song|track|"
+                 r"playing|music|spotify|youtube results|list videos)\b"),
+    "web":      ("deep research, reading a web page's text",
+                 r"\b(research|in depth|deep dive|read (this|the|that)|article|page|url|link|https?://)"),
+    "system":   ("battery/disk, notifications, clipboard, screenshots, timers list/cancel, quit apps, "
+                 "dark mode, Wi-Fi, brightness, lock screen, sleep/restart/shut down",
+                 r"\b(battery|disk|storage|space|uptime|notif|clipboard|copy|paste|screenshot|screen ?shot|"
+                 r"timers?|cancel|running|installed|apps|quit|close|dark mode|light mode|wi-?fi|brightness|"
+                 r"lock|sleep|restart|reboot|shut ?down|log ?out)\b"),
+    "files":    ("list, read, write, edit, find and search files",
+                 r"\b(files?|folders?|director|desktop|downloads|documents|read |write|edit|code|"
+                 r"project|repo|find|~/|/users/)"),
     "software": ("install, uninstall, search packages and apps",
                  r"\b(install|uninstall|remove|brew|homebrew|pip|npm|package|app store|update)\b"),
     "memory":   ("delete memories",
                  r"\b(forget|erase|wipe)\b|\bdelete .{0,15}memor"),
-    "control":  ("AppleScript, click UI buttons, type, press keys, scroll, browser JavaScript, "
-                 "Messages/Mail/Calendar/Reminders automation",
-                 r"\b(click|press|type|scroll|button|window|applescript|automate|message|imessage|text |"
-                 r"mail|email|calendar|reminder|event|meeting|safari|chrome|tab|javascript|setting|"
-                 r"dark mode|wifi|bluetooth|do not disturb|minimi|maximi|close)\b"),
+    "life":     ("Messages/iMessage, Contacts, Mail (send, unread), Calendar (events, add), "
+                 "Reminders, Notes",
+                 r"\b(message|imessage|text (him|her|them|my|to)|sms|contact|phone number|e-?mail|mail|inbox|"
+                 r"calendar|schedule|agenda|event|meeting|appointment|remind|reminders?|to-?do|notes?)\b"),
+    "control":  ("click things by their visible text, wait for text, click by name or position, "
+                 "type, press keys, scroll, browser JavaScript",
+                 r"\b(click|press|type|scroll|button|window|automate|safari|chrome|tab|javascript|"
+                 r"keyboard|shortcut|minimi|maximi|fill|form|screen|menu|dialog|wait for)\b"),
+    "skills":   ("learn a new permanent ability (write a skill), list or remove skills",
+                 r"\b(skill|learn|teach|new ability|from now on you can|build (a|an) tool)\b"),
 }
 
 
@@ -73,7 +85,7 @@ def _param_spec(annotation, doc: str | None) -> dict:
 
 
 def tool(group: str = "core", confirm: str | None = None, ack: str | None = None,
-         timeout: float = 30.0, **param_docs):
+         timeout: float = 30.0, untrusted: bool = False, **param_docs):
     """Register a function as a tool. Keyword args document its parameters."""
     def wrap(fn):
         sig = inspect.signature(fn)
@@ -95,23 +107,60 @@ def tool(group: str = "core", confirm: str | None = None, ack: str | None = None
                 "parameters": {"type": "object", "properties": props, "required": required},
             },
         }
-        TOOLS[fn.__name__] = Tool(fn.__name__, fn, schema, group, confirm, ack, timeout)
+        TOOLS[fn.__name__] = Tool(fn.__name__, fn, schema, group, confirm, ack, timeout, untrusted)
         return fn
     return wrap
+
+
+def register(name: str, fn, description: str, parameters: dict, group: str,
+             confirm: str | None = "action", untrusted: bool = True, timeout: float = 60.0):
+    """Add a tool whose schema already exists (used for MCP servers)."""
+    schema = {"type": "function", "function": {
+        "name": name, "description": description[:300], "parameters": parameters}}
+    TOOLS[name] = Tool(name, fn, schema, group, confirm, None, timeout, untrusted)
+
+
+_VERBS = {
+    "web_search": "🔎 Searching the web", "deep_web_search": "🔬 Researching", "fetch_webpage": "📄 Reading",
+    "get_weather": "🌤 Weather", "calculate": "🧮 Calculating", "open_app": "🚀 Opening",
+    "open_url": "🌐 Opening", "browse": "🌐 Searching", "play_youtube": "▶️ YouTube",
+    "search_youtube": "▶️ YouTube search", "play_music": "🎵 Playing", "media_control": "🎵",
+    "set_volume": "🔊 Volume", "set_timer": "⏱ Timer", "remember": "🧠 Remembering",
+    "recall": "🧠 Recalling", "forget": "🧠 Forgetting", "run_shell": "⌨️ Shell", "run_python": "🐍 Python",
+    "applescript": "🍎 AppleScript", "send_imessage": "💬 Message", "send_email": "✉️ Email",
+    "calendar_events": "📅 Calendar", "add_calendar_event": "📅 New event", "add_reminder": "⏰ Reminder",
+    "create_note": "📝 Note", "create_skill": "🧩 Learning skill", "system_toggle": "⚙️",
+    "read_screen": "👁 Reading the screen", "see_screen": "👁 Looking at the screen",
+    "click_text": "🖱 Clicking", "wait_for_text": "⏳ Waiting for", "type_text": "⌨️ Typing",
+    "press_key": "⌨️ Key", "read_file": "📄 Reading", "write_file": "📝 Writing", "edit_file": "📝 Editing",
+    "find_files": "🔎 Finding files", "search_in_files": "🔎 Searching files",
+    "install_package": "📦 Installing", "uninstall_package": "📦 Uninstalling", "use_tools": "🧰 Unlocking",
+}
+
+
+def describe_call(name: str, args: dict) -> str:
+    """One readable line for a tool call, e.g. '▶️ YouTube · gotham chess'."""
+    verb = _VERBS.get(name, "🛠 " + name.replace("_", " "))
+    args = args or {}
+    detail = str(args.get("path") or next((v for v in args.values() if isinstance(v, (str, int, float)) and str(v)), ""))
+    if name in ("run_python", "applescript", "create_skill"):
+        detail = (args.get("name") or "") if name == "create_skill" else ""
+    detail = " ".join(detail.split())
+    return f"{verb} · {detail[:80]}" if detail else verb
 
 
 def groups_for(text: str) -> set[str]:
     """Which optional tool groups a user message is likely to need."""
     t = (text or "").lower()
-    return {g for g, (_, pattern) in GROUPS.items() if re.search(pattern, t)}
+    return {g for g, (_, pattern) in list(GROUPS.items()) if re.search(pattern, t)}
 
 
 def schemas(groups: set[str] | None = None) -> list[dict]:
     """Schemas for core tools + the given groups (all tools if groups is None)."""
     if groups is None:
-        return [t.schema for t in TOOLS.values()]
-    out = [t.schema for t in TOOLS.values() if t.group == "core" or t.group in groups]
-    missing = [g for g in GROUPS if g not in groups]
+        return [t.schema for t in list(TOOLS.values())]
+    out = [t.schema for t in list(TOOLS.values()) if t.group == "core" or t.group in groups]
+    missing = [g for g in list(GROUPS) if g not in groups]
     if missing:
         out.append(_use_tools_schema(missing))
     return out
@@ -138,12 +187,12 @@ def _use_tools_schema(missing: list[str]) -> dict:
 def _clean_args(t: Tool, args: dict) -> tuple[dict, str | None]:
     """Drop unknown args, coerce simple types, report missing required ones."""
     params = t.schema["function"]["parameters"]
-    props, required = params["properties"], params["required"]
+    props, required = params.get("properties", {}), params.get("required", [])
     clean = {}
     for k, v in (args or {}).items():
         if k not in props:
             continue
-        want = props[k]["type"]
+        want = props[k].get("type")
         try:
             if want == "boolean" and isinstance(v, str):
                 v = v.strip().lower() in ("true", "1", "yes")
@@ -165,7 +214,7 @@ def run(name: str, args: dict) -> str:
     """Execute a tool by name. Always returns a string; never raises."""
     t = TOOLS.get(name)
     if not t:
-        return f"Unknown tool '{name}'. Available: {', '.join(sorted(TOOLS))}."
+        return f"Unknown tool '{name}'. Use one listed in this request, or use_tools to unlock more."
     clean, err = _clean_args(t, args)
     if err:
         return err

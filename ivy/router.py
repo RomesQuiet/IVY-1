@@ -1,26 +1,12 @@
 # ivy/router.py
-"""Task classification + model routing with rate-limit awareness."""
+"""Task classification + a budget-aware pool of LLM endpoints."""
 
-import json
+import os
 import re
-from datetime import datetime, timedelta
-from pathlib import Path
+import time
+from dataclasses import dataclass
 
 from . import config
-
-STATE_PATH = Path(__file__).resolve().parent.parent / "state.json"
-
-def _chain(*models):
-    return list(dict.fromkeys(models))   # dedupe, keep order
-
-
-DIFFICULTY_CHAINS = {
-    "simple":  _chain(config.MODEL_FAST,  config.MODEL_MAIN,  config.MODEL_HEAVY),
-    "medium":  _chain(config.MODEL_MAIN,  config.MODEL_HEAVY, config.MODEL_FAST),
-    "complex": _chain(config.MODEL_HEAVY, config.MODEL_MAIN,  config.MODEL_FAST),
-}
-ALL_MODELS = _chain(config.MODEL_FAST, config.MODEL_MAIN, config.MODEL_HEAVY)
-
 
 # Weighted signals: positive pushes toward complex, negative toward simple.
 _SIGNALS = [
@@ -106,79 +92,141 @@ def classify(text: str) -> str:
     return "medium"
 
 
-def parse_retry_seconds(error_message: str) -> int:
-    m = re.search(r"try again in (\d+)m([\d.]+)s", error_message)
-    if m:
-        return int(m.group(1)) * 60 + int(float(m.group(2))) + 5
-    m = re.search(r"try again in ([\d.]+)s", error_message)
-    if m:
-        return int(float(m.group(1))) + 5
-    return 60
+def parse_duration(text: str) -> float:
+    """'2m52.8s' / '922ms' / '50.4s' / '1h2m' → seconds."""
+    if not text:
+        return 0.0
+    m = re.search(r"([\d.]+)ms\b", text)
+    if m and not re.search(r"\d[hms](?!s)", text.replace(m.group(0), "")):
+        return float(m.group(1)) / 1000
+    total = 0.0
+    for value, unit in re.findall(r"([\d.]+)\s*([hms])(?!s)", text):
+        total += float(value) * {"h": 3600, "m": 60, "s": 1}[unit]
+    return total
 
 
-class ModelRouter:
+def parse_retry_seconds(error_message: str) -> float:
+    m = re.search(r"try again in ([\dhms.]+)", error_message)
+    return parse_duration(m.group(1)) + 1 if m else 30.0
+
+
+# =====================================================================
+# Model pool — every (provider, model) with its own live token budget
+# =====================================================================
+
+@dataclass
+class Endpoint:
+    provider: str
+    model: str
+    tier: str                 # "fast" | "main" | "backup"
+    client: object
+    tpm: int                  # tokens/minute cap; also the max size of ONE request
+    extra: dict               # provider-specific request params
+    remaining: int | None = None
+    reset_at: float = 0.0
+    benched_until: float = 0.0
+    bench_reason: str = ""
+
+    @property
+    def name(self) -> str:
+        short = self.model.split("/")[-1]
+        return short if self.provider == "groq" else f"{self.provider}:{short}"
+
+    def budget(self, now: float) -> int:
+        if self.remaining is None or now >= self.reset_at:
+            return self.tpm
+        return self.remaining
+
+
+TIER_ORDER = {
+    "simple":  ("fast", "main", "backup"),
+    "medium":  ("main", "fast", "backup"),
+    "complex": ("main", "fast", "backup"),
+}
+
+
+class ModelPool:
     def __init__(self):
-        self.state = {"dead_until": {}}
-        self._load()
+        from openai import OpenAI
+        self.endpoints: list[Endpoint] = []
+        for p in config.PROVIDERS:
+            key = os.getenv(p["key_env"])
+            if not key:
+                continue
+            client = OpenAI(base_url=p["base_url"], api_key=key, timeout=60, max_retries=0)
+            for tier, model in p["models"].items():
+                if model:
+                    self.endpoints.append(Endpoint(p["name"], model, tier, client,
+                                                   p.get("tpm", 8000), p.get("extra", {})))
+        if not self.endpoints:
+            raise RuntimeError("No LLM provider configured — add GROQ_API_KEY to .env")
 
-    def _load(self):
-        if STATE_PATH.exists():
-            try:
-                data = json.loads(STATE_PATH.read_text())
-                self.state = data if isinstance(data, dict) else self.state
-                self.state.setdefault("dead_until", {})
-            except Exception:
-                pass
+    # ---- choosing ----
 
-    def _save(self):
-        STATE_PATH.write_text(json.dumps(self.state, indent=2))
+    def chain(self, difficulty: str, force: str | None = None) -> list[Endpoint]:
+        order = TIER_ORDER.get(difficulty, TIER_ORDER["medium"])
+        eps = sorted(self.endpoints, key=lambda e: order.index(e.tier) if e.tier in order else 9)
+        if force:
+            eps = sorted(eps, key=lambda e: e.model != force)
+        return eps
 
-    def is_dead(self, model: str) -> bool:
-        iso = self.state["dead_until"].get(model)
-        if not iso:
-            return False
+    def pick(self, difficulty: str, need: int, force: str | None = None,
+             skip: set = frozenset()) -> tuple[Endpoint | None, float, str]:
+        """Best endpoint for a request of `need` tokens → (endpoint, wait_seconds, why).
+        wait > 0 means every usable endpoint is out of budget until then."""
+        now = time.time()
+        usable = [e for e in self.chain(difficulty, force)
+                  if e.benched_until <= now and e.tpm >= need and id(e) not in skip]
+        if not usable:
+            too_big = all(e.tpm < need for e in self.endpoints)
+            return None, 0.0, "too_big" if too_big else "benched"
+        for e in usable:
+            if e.budget(now) >= need:
+                return e, 0.0, ""
+        soonest = min(usable, key=lambda e: e.reset_at)
+        return soonest, max(0.0, soonest.reset_at - now), "budget"
+
+    # ---- feedback from the API ----
+
+    def update_from_headers(self, e: Endpoint, headers):
         try:
-            until = datetime.fromisoformat(iso)
-        except Exception:
-            return False
-        if datetime.now() >= until:
-            self.state["dead_until"].pop(model, None)
-            self._save()
-            return False
-        return True
+            e.remaining = int(headers.get("x-ratelimit-remaining-tokens"))
+            e.reset_at = time.time() + parse_duration(headers.get("x-ratelimit-reset-tokens", ""))
+        except (TypeError, ValueError):
+            pass
 
-    def mark_dead(self, model: str, seconds: int, reason: str = "rate-limited"):
-        until = (datetime.now() + timedelta(seconds=seconds)).isoformat(timespec="seconds")
-        self.state["dead_until"][model] = until
-        self._save()
-        mins = max(1, seconds // 60)
-        print(f"  💀 {model.split('/')[-1]} {reason} — skipping it for ~{mins} min")
+    def rate_limited(self, e: Endpoint, message: str):
+        wait = parse_retry_seconds(message)
+        e.remaining, e.reset_at = 0, time.time() + wait
+        if wait > 120:   # daily quota, not the per-minute one
+            self.bench(e, wait, "daily limit reached")
+        else:
+            print(f"  ⏳ {e.name} rate-limited for {wait:.0f}s")
 
-    def dead_summary(self) -> str:
-        dead = {m: t for m, t in self.state["dead_until"].items() if self.is_dead(m)}
-        if not dead:
-            return ""
-        parts = [f"{m.split('/')[-1]} until {t[11:16]}" for m, t in dead.items()]
-        return "rate-limited: " + ", ".join(parts)
+    def bench(self, e: Endpoint, seconds: float, reason: str):
+        e.benched_until, e.bench_reason = time.time() + seconds, reason
+        print(f"  💀 {e.name} {reason} — skipping it for ~{max(1, int(seconds // 60))} min")
 
-    def chain_for(self, difficulty: str):
-        return list(DIFFICULTY_CHAINS.get(difficulty, DIFFICULTY_CHAINS["medium"]))
+    def available(self) -> int:
+        now = time.time()
+        return sum(1 for e in self.endpoints if e.benched_until <= now)
 
-    def pick(self, difficulty: str) -> str:
-        for m in self.chain_for(difficulty):
-            if not self.is_dead(m):
-                return m
-        return self.chain_for(difficulty)[0]
-
-    def alive_count(self) -> int:
-        return sum(1 for m in ALL_MODELS if not self.is_dead(m))
+    def status(self) -> str:
+        now = time.time()
+        parts = []
+        for e in self.endpoints:
+            if e.benched_until > now:
+                parts.append(f"{e.name}: {e.bench_reason} (back {time.strftime('%H:%M', time.localtime(e.benched_until))})")
+            else:
+                parts.append(f"{e.name}: {e.budget(now)}/{e.tpm} tokens left this minute")
+        return "; ".join(parts)
 
 
-_router = None
+_pool = None
 
 
-def get_router() -> ModelRouter:
-    global _router
-    if _router is None:
-        _router = ModelRouter()
-    return _router
+def get_pool() -> ModelPool:
+    global _pool
+    if _pool is None:
+        _pool = ModelPool()
+    return _pool
