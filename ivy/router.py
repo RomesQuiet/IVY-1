@@ -123,7 +123,7 @@ class Endpoint:
     tpm: int                  # tokens/minute cap; also the max size of ONE request
     extra: dict               # provider-specific request params
     remaining: int | None = None
-    reset_at: float = 0.0
+    seen_at: float = 0.0      # when `remaining` was true (in the future right after a 429)
     benched_until: float = 0.0
     bench_reason: str = ""
 
@@ -133,9 +133,15 @@ class Endpoint:
         return short if self.provider == "groq" else f"{self.provider}:{short}"
 
     def budget(self, now: float) -> int:
-        if self.remaining is None or now >= self.reset_at:
+        """Tokens available now. Groq refills continuously (8000/min ≈ 133 per second),
+        so the allowance grows from the last reading instead of resetting all at once."""
+        if self.remaining is None:
             return self.tpm
-        return self.remaining
+        return min(self.tpm, int(self.remaining + (now - self.seen_at) * self.tpm / 60))
+
+    def wait_for(self, need: int, now: float) -> float:
+        """Seconds until `need` tokens have refilled."""
+        return max(0.0, (need - self.budget(now)) * 60 / self.tpm)
 
 
 TIER_ORDER = {
@@ -183,21 +189,23 @@ class ModelPool:
         for e in usable:
             if e.budget(now) >= need:
                 return e, 0.0, ""
-        soonest = min(usable, key=lambda e: e.reset_at)
-        return soonest, max(0.0, soonest.reset_at - now), "budget"
+        soonest = min(usable, key=lambda e: e.wait_for(need, now))
+        return soonest, soonest.wait_for(need, now), "budget"
 
     # ---- feedback from the API ----
 
     def update_from_headers(self, e: Endpoint, headers):
         try:
-            e.remaining = int(headers.get("x-ratelimit-remaining-tokens"))
-            e.reset_at = time.time() + parse_duration(headers.get("x-ratelimit-reset-tokens", ""))
+            e.remaining, e.seen_at = int(headers.get("x-ratelimit-remaining-tokens")), time.time()
         except (TypeError, ValueError):
             pass
 
     def rate_limited(self, e: Endpoint, message: str):
         wait = parse_retry_seconds(message)
-        e.remaining, e.reset_at = 0, time.time() + wait
+        # Groq says this request fits in `wait` seconds, so that's when the budget equals it.
+        requested = re.search(r"Requested (\d+)", message)
+        e.remaining = int(requested.group(1)) if requested else e.tpm // 2
+        e.seen_at = time.time() + wait
         if wait > 120:   # daily quota, not the per-minute one
             self.bench(e, wait, "daily limit reached")
         else:
@@ -218,7 +226,7 @@ class ModelPool:
             if e.benched_until > now:
                 parts.append(f"{e.name}: {e.bench_reason} (back {time.strftime('%H:%M', time.localtime(e.benched_until))})")
             else:
-                parts.append(f"{e.name}: {e.budget(now)}/{e.tpm} tokens left this minute")
+                parts.append(f"{e.name}: {max(0, e.budget(now))}/{e.tpm} tokens available")
         return "; ".join(parts)
 
 

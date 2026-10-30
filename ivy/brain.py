@@ -31,6 +31,7 @@ from .router import classify, get_pool
 MAX_TOOL_ROUNDS = 15
 MAX_HISTORY_MESSAGES = 24             # user + assistant lines (~12 exchanges)
 MAX_REPLY_TOKENS = 1024          # gpt-oss spends part of this on hidden reasoning
+REPLY_RESERVE = 300              # what a typical reply adds to a request's cost
 REQUEST_BUDGET = 6800            # stay under the 8k-per-request cap with margin
 MAX_WAIT = 45                    # seconds Ivy will wait out a rate limit
 PER_TOOL_LIMIT = {"web_search": 3, "deep_web_search": 2, "fetch_webpage": 4}
@@ -77,9 +78,10 @@ def _split_sentences(text: str):
 
 
 def _estimate(messages, tools) -> int:
-    """Rough token count (Groq rejects requests over the cap before running them)."""
+    """Rough token count: real Ivy requests run ~5.2 chars per token, and Groq counts far
+    less than max_tokens for a short reply. If this is low, a quick 429 corrects it."""
     chars = len(json.dumps(messages, ensure_ascii=False)) + len(json.dumps(tools))
-    return chars // 4 + MAX_REPLY_TOKENS
+    return chars // 5 + REPLY_RESERVE
 
 
 def _console_confirm(title: str, detail: str) -> bool:
