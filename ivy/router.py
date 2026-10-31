@@ -156,6 +156,10 @@ TIER_ORDER = {
 
 
 class ModelPool:
+    forced: str | None = None       # the model Romeu chose, if any
+    last: str = ""                  # the model that answered last
+    used: dict | None = None        # model name → tokens used since Ivy started
+
     def __init__(self):
         from openai import OpenAI
         self.endpoints: list[Endpoint] = []
@@ -220,6 +224,29 @@ class ModelPool:
     def bench(self, e: Endpoint, seconds: float, reason: str):
         e.benched_until, e.bench_reason = time.time() + seconds, reason
         print(f"  💀 {e.name} {reason} — skipping it for ~{max(1, int(seconds // 60))} min")
+
+    def record_usage(self, e: Endpoint, tokens: int):
+        self.used = self.used or {}
+        self.used[e.name] = self.used.get(e.name, 0) + tokens
+        self.last = e.name
+
+    def tier_model(self, tier: str) -> Endpoint | None:
+        return next((e for e in self.endpoints if e.tier == tier), None)
+
+    def report(self) -> str:
+        """The truth about Ivy's models, for her to read out instead of guessing."""
+        names = {e.tier: e.name for e in self.endpoints}
+        if self.forced:
+            mode = f"Romeu chose {self.forced.split('/')[-1]}, so it's used first."
+        else:
+            mode = (f"The router is on automatic: {names.get('fast', 'the fast model')} for simple requests, "
+                    f"{names.get('main', 'the main model')} for the rest, {names.get('backup', 'none')} as backup.")
+        used = ", ".join(f"{n}: {t}" for n, t in (self.used or {}).items()) or "none yet"
+        return (f"{mode} Last answer came from {self.last or 'no model yet'}. "
+                f"Tokens since Ivy started: {used}. Available right now: {self.status()}. "
+                "Groq's daily totals aren't visible to Ivy; they're on console.groq.com. "
+                "Romeu can switch by saying 'use your lightest model', 'use your heaviest model' or "
+                "'use automatic', or with /model.")
 
     def available(self) -> int:
         now = time.time()

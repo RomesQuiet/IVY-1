@@ -306,6 +306,25 @@ class Brain:
             self.actions_approved = True
         return ok
 
+    def _about_me(self, text: str):
+        """Answer questions about her models from the real pool, or switch them."""
+        asked = intents.about_ivy(text)
+        if not asked:
+            return None
+        pool = get_pool()
+        if asked == "auto":
+            self.force_model = None
+        elif asked != "status":
+            chosen = pool.tier_model(asked)
+            if not chosen:
+                reply = f"I don't have a {asked} model set up."
+                return reply, None, {}, reply
+            self.force_model = chosen.model
+        pool.forced = self.force_model
+        reply = pool.report() if asked == "status" else (
+            "Back on automatic." if asked == "auto" else f"Switched to {chosen.name}.")
+        return reply, None, {}, reply
+
     def _named_by_romeu(self, target: str) -> bool:
         """Did Romeu name this, or say yes to a list that contained it? The model can't be
         trusted to choose what to remove: told to list first, it still went for everything."""
@@ -449,7 +468,7 @@ class Brain:
 
         # ---- 1. instant path ----
         try:
-            instant = intents.run(user_input)
+            instant = self._about_me(user_input) or intents.run(user_input)
         except Exception as e:
             print(f"  (instant command failed: {e})")
             instant = None
@@ -555,6 +574,8 @@ class Brain:
 
                 if on_sentence and sentence_buffer.strip() and not calls:
                     on_sentence(sentence_buffer.strip())
+                if usage:
+                    get_pool().record_usage(e, usage.prompt_tokens + usage.completion_tokens)
                 if usage and on_status:
                     on_status(f"📊 {e.name}  {usage.prompt_tokens} in + {usage.completion_tokens} out")
 

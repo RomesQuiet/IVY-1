@@ -688,6 +688,48 @@ class FailuresFromRealUse(AgentCase):
         self.assertEqual(tools.resolve_path("g/a.py"), config.WORKSPACE / "g/a.py")
 
 
+class KnowsHerself(AgentCase):
+    """She told Romeu she ran on a model that doesn't exist and that the router was gone."""
+
+    def ask(self, text, *replies):
+        model = FakeModel(list(replies))
+        fake_pool(main=model, fast=model, backup=model)
+        brain = self.brain()
+        return brain, brain.chat(text), model
+
+    def test_usage_questions_use_real_numbers_and_no_model(self):
+        for text in ("just tell me what\u2019s your usage on the groq\u2019s models", "what's your usage", "what model are you using?",
+                     "can I switch models?"):
+            brain, reply, model = self.ask(text)
+            self.assertEqual(model.requests, [], text)
+            self.assertIn("fast for simple requests", reply)
+            self.assertIn("main for the rest", reply)
+            self.assertIn("/model", reply)
+
+    def test_switching(self):
+        for text, want in (("switch yourself to your lightest model", "fake/fast"), ("then switch to the heaviest", "fake/main")):
+            brain, reply, model = self.ask(text)
+            self.assertEqual(brain.force_model, want)
+            self.assertEqual(model.requests, [])
+        brain.chat("use automatic")
+        self.assertIsNone(brain.force_model)
+
+    def test_tokens_are_counted(self):
+        pool = fake_pool(main=FakeModel([]))
+        pool.record_usage(pool.endpoints[0], 500)
+        pool.record_usage(pool.endpoints[0], 25)
+        self.assertIn("main: 525", pool.report())
+        self.assertIn("Last answer came from main", pool.report())
+
+    def test_ordinary_requests_arent_caught(self):
+        for text in ("what's my disk usage", "what's your cpu usage", "use the fastest route", "what is a language model"):
+            self.assertIsNone(intents.about_ivy(text), text)
+
+    def test_prompt_and_tool_are_available_every_request(self):
+        self.assertIn("my_status", config.SYSTEM_PROMPT)
+        self.assertEqual(toolkit.TOOLS["my_status"].group, "core")
+
+
 class Recovery(AgentCase):
     """Whatever slips past the checks has to be recoverable and on the record."""
 

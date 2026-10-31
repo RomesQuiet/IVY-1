@@ -49,6 +49,25 @@ def _strip_video(q: str) -> str:
     return re.sub(r"\s+videos?$", "", q).strip()
 
 
+_ABOUT_ME = re.compile(
+    r"\b(?:your|groq'?s?|tokens?)\b.*\busage\b|\busage\b.*\b(?:groq|models?)\b|\btokens? (?:left|remaining)\b"
+    r"|\b(?:which|what) models?\b.*\b(?:you|using|running)\b|\bcan (?:i|we|you) (?:switch|change)\b.*\bmodels?\b"
+    r"|\bare you on\b.*\bmodels?\b")
+_NOT_ME = re.compile(r"\b(cpu|disk|memory|ram|battery|data|phone|water|gas)\b")
+_SWITCH = re.compile(r"\b(?:switch|change|use|go to|move)\b.*\b(?:(lightest|lighter|smallest|fastest)"
+                     r"|(heaviest|heavier|biggest|strongest)|(automatic|auto|the router))(?: one| model| mode)?$")
+
+
+def about_ivy(text: str) -> str | None:
+    """Questions about her own models → 'status', 'fast', 'main' or 'auto'. She can't know
+    these from training, so they never reach the model."""
+    t = _clean(text).replace("\u2019", "'")
+    m = _SWITCH.search(t)
+    if m:
+        return "fast" if m.group(1) else "main" if m.group(2) else "auto"
+    return "status" if len(t) <= 120 and _ABOUT_ME.search(t) and not _NOT_ME.search(t) else None
+
+
 def match(text: str) -> tuple[str, dict] | tuple[None, str] | None:
     """→ (tool_name, args) to run, (None, reply) for a direct answer, or None."""
     # --- background tasks (before the length and comma limits: goals can be long) ---

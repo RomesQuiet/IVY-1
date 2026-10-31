@@ -493,6 +493,13 @@ def _hold(path: Path) -> Path:
     return held
 
 
+@tool()
+def my_status() -> str:
+    """Ivy's real models, router mode, token use and how to switch. Use for any question about herself."""
+    from .router import get_pool
+    return get_pool().report()
+
+
 @tool(group="files", confirm="always", timeout=120, path="File or folder to remove")
 def remove_file(path: str) -> str:
     """Remove a file or folder. It's kept so restore_removed can bring it back."""
