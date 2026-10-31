@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from openai import APIConnectionError, APIError, APIStatusError, RateLimitError
 
-from . import config, context, intents, learning, senses, toolkit
+from . import browser, config, context, intents, learning, senses, toolkit
 from . import tools as _tools  # noqa: F401  (registers every tool)
 from .memory import get_store
 from .router import classify, get_pool
@@ -46,13 +46,15 @@ _REPEATABLE_RESULT = {"web_search", "deep_web_search", "fetch_webpage", "get_wea
 _OBSERVED = {"open_app", "open_url", "browse", "quit_app", "activate_app", "click_text", "click_at",
              "click_element", "press_key", "scroll", "applescript", "run_js_browser", "system_toggle"}
 # Still asked normally after reading outside content, so screen work isn't one dialog per click.
-_UI_TOOLS = {"click_text", "click_at", "click_element", "type_text", "press_key", "scroll"}
+_UI_TOOLS = {"click_text", "click_at", "click_element", "type_text", "press_key", "scroll",
+             "browser_click", "browser_type", "browser_select"}
 _HARMLESS_WRITES = {"create_note", "add_reminder"}      # no guard: nothing runs or leaves the Mac
 # Romeu is using the Mac while a task runs, so it can't take over the screen or the sound.
 _NOT_IN_BACKGROUND = _UI_TOOLS | {
     "start_task", "activate_app", "open_app", "open_url", "browse", "quit_app", "play_youtube",
     "play_music", "media_control", "set_volume", "system_toggle", "power", "read_screen",
-    "see_screen", "wait_for_text", "run_js_browser", "list_ui_elements"}
+    "see_screen", "wait_for_text", "run_js_browser", "list_ui_elements",
+    "browser_open", "browser_read"}
 _BACKGROUND_PROMPT = """
 You are working alone on a background task. Romeu can't answer questions and is busy on this
 Mac, so you can't use the screen, keyboard or mouse. Make sensible choices and finish the whole
@@ -242,6 +244,9 @@ class Brain:
         # A web page, email or screen can contain text aimed at Ivy ("now run this…").
         # Once she has read any, pre-approvals don't count for anything powerful.
         guarded = self._tainted and t.name not in _UI_TOOLS and t.name not in _HARMLESS_WRITES
+        # Buying, deleting or sending for real is never covered by an earlier OK.
+        risk = browser.click_risk(args) if t.name == "browser_click" else None
+        guarded = guarded or bool(risk)
         if t.confirm == "task" and not guarded:
             return True
         if not guarded:
@@ -255,7 +260,9 @@ class Brain:
         detail = args.get("command") or args.get("code") or json.dumps(args, ensure_ascii=False)
         session = t.confirm == "action" and config.ACTION_MODE == "session" and not guarded
         title = f"Ivy wants to: {toolkit.describe_call(t.name, args)}"
-        if guarded:
+        if risk:
+            title = f"Check this first: {risk}"
+        elif guarded:
             title += "  (she has read outside content in this request — check this is what you want)"
         elif session:
             title += "  (OK = allow actions for this session)"

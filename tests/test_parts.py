@@ -231,7 +231,8 @@ class Wake(unittest.TestCase):
         saved = wake.sd.InputStream
         wake.sd.InputStream = lambda **kw: Stream()
         try:
-            return wake.WakeListener(config.WAKE_WORD, config.WAKE_THRESHOLD).wait_for_wake()
+            # below the ~0.73 silence scores, so this tests the guard, not the current threshold
+            return wake.WakeListener(config.WAKE_WORD, 0.5).wait_for_wake()
         finally:
             wake.sd.InputStream = saved
 

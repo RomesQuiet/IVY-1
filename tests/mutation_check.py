@@ -3,7 +3,8 @@
 Do the tests really catch bugs? Puts past bugs back, one at a time, into a throwaway
 copy of the code and checks that the suite fails each time.
 
-    python tests/mutation_check.py          takes about ten minutes
+    python tests/mutation_check.py              all of them, about twenty minutes
+    python tests/mutation_check.py passwords    only bugs whose description matches
 """
 
 import shutil
@@ -32,6 +33,9 @@ BUGS = [
     ("instant commands ignore lessons", "ivy/intents.py", "if learning.applies(name, text):", "if False:"),
     ("tasks can use the screen", "ivy/brain.py", 'self.denied = _NOT_IN_BACKGROUND if background else frozenset()', "self.denied = frozenset()"),
     ("a page can start a clean task", "ivy/brain.py", 'if t.confirm == "task" and not guarded:', 'if t.confirm == "task":'),
+    ("passwords get typed", "ivy/browser.py", "if _SENSITIVE_FIELD.search(about):", "if False:"),
+    ("purchases don't ask", "ivy/brain.py", "guarded = guarded or bool(risk)", "pass"),
+    ("local files can be opened", "ivy/browser.py", 'if "://" in url or', 'if False and'),
     ("page function renamed", "ivy/ui/index.html", "window.toolDone =", "window.toolFinished ="),
 ]
 
@@ -42,7 +46,8 @@ def main():
         copy = Path(folder) / "ivy-copy"
         shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".venv", ".git", "__pycache__", "*.wav"))
         (copy / ".env").unlink(missing_ok=True)
-        for what, file, good, bad in BUGS:
+        chosen = [b for b in BUGS if not sys.argv[1:] or any(w in b[0] for w in sys.argv[1:])]
+        for what, file, good, bad in chosen:
             path = copy / file
             original = path.read_text()
             if good not in original:
@@ -56,7 +61,7 @@ def main():
             print(f"{'caught ' if caught else 'MISSED '} {what}", flush=True)
             if not caught:
                 missed.append(what)
-    print(f"\n{len(BUGS) - len(missed)}/{len(BUGS)} caught")
+    print(f"\n{len(chosen) - len(missed)}/{len(chosen)} caught")
     sys.exit(1 if missed else 0)
 
 

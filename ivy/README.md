@@ -100,6 +100,13 @@ try to obey it. So once a request has read outside content, shell, Python, Apple
 messages and other powerful tools ask every time, whatever the settings above say. Clicks
 and typing are exempt so screen work isn't one dialog per click.
 
+## Ivy's browser
+
+For websites she uses her own Brave window and profile, separate from yours, and reads pages
+as numbered buttons, links and fields. Log in there to the sites you want her to use; she can't
+see your everyday browser. She never types passwords or card numbers, and anything that buys,
+deletes or sends asks you every time.
+
 ## Background tasks
 
 Say "research standing desks in the background" and keep working. One task runs at a time,

@@ -626,7 +626,7 @@ def forget_all() -> str:
 
 
 # Register the rest: macOS control, media, everyday apps, and learned skills.
-from . import context, skills, tasks, tools_life, tools_mac, tools_media  # noqa: E402,F401
+from . import browser, context, skills, tasks, tools_life, tools_mac, tools_media  # noqa: E402,F401
 skills.load_all()
 
 

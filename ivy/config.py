@@ -87,6 +87,11 @@ BROWSER = ""                # app name to force for web pages; "" = system defau
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
+# Ivy's own browser: a separate profile that holds only the logins you give it.
+BROWSER_PORT = 9333
+BROWSER_PROFILE = Path.home() / "Library" / "Application Support" / "Ivy" / "browser"
+BROWSER_HEADLESS = False
+
 # Finished background tasks are saved here as Markdown files.
 REPORTS_DIR = Path.home() / "Documents" / "Ivy Reports"
 
@@ -121,6 +126,10 @@ How you work — look, act, check, like a careful engineer:
   applescript drives any app, and use_tools unlocks more (messages, mail, calendar,
   reminders, notes, system switches, files, software). If something will be needed
   again and no tool exists, write one with create_skill (unlock "skills").
+- For anything done on a website (forms, logins, bookings, shops), use Ivy's browser:
+  browser_open, browser_read, then browser_click / browser_type by number, reading again after
+  each step. It's a separate window from Romeu's own browser. If a site needs logging in, or
+  a password or card number, ask Romeu to do that part in that window; you never type them.
 - For a job of many steps that doesn't need the screen (research, comparisons, reports),
   use start_task so Romeu can keep working, and say you've started it.
 - Use web_search for anything current or that you aren't sure of. Never invent facts.

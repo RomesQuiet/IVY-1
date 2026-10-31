@@ -31,7 +31,8 @@ class _GuardedPopen(_real_popen):
     def __init__(self, args, *a, **kw):
         name = Path(args[0] if isinstance(args, (list, tuple)) else str(args).split()[0]).name
         script = Path(str(args[1])).name if isinstance(args, (list, tuple)) and len(args) > 1 else ""
-        if name not in _ALLOWED_COMMANDS and not (name.startswith("python") and script.startswith("fake_")):
+        headless = isinstance(args, (list, tuple)) and "--headless=new" in args
+        if name not in _ALLOWED_COMMANDS and not headless and not (name.startswith("python") and script.startswith("fake_")):
             blocked.append(args)
             raise Blocked(f"test tried to run: {args}")
         super().__init__(args, *a, **kw)
@@ -51,6 +52,9 @@ def install():
     config.MUTED = True
     config.ROOT = temp                      # caches and settings land here too
     config.REPORTS_DIR = temp / "reports"
+    config.BROWSER_PROFILE = temp / "browser"
+    config.BROWSER_HEADLESS = True          # never a window, never the real profile
+    config.BROWSER_PORT = 9347
     memory._store = memory.MemoryStore(temp / "memory.json")
 
     def no_volume(_level):
