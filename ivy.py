@@ -4,7 +4,7 @@
 import threading
 
 from ivy.brain import Brain
-from ivy import config, mcp_client, senses, voice
+from ivy import config, mcp_client, senses, voice, watcher
 from ivy.toolkit import describe_call
 
 BANNER = r"""
@@ -27,6 +27,13 @@ def main():
     for line in senses.doctor():
         if "OFF" in line or "MISSING" in line:
             print(f"⚠️  {line}")
+
+    def on_alert(text):
+        print(f"\n🔔 {text}")
+        if not watcher.in_quiet_hours():
+            voice.speak_async(text)
+
+    watcher.start(on_alert)
     mode = "text"          # "text" | "voice" | "wake"
     listener = None
     awake = False          # sub-state for wake mode: False=sleeping, True=conversing
@@ -159,7 +166,8 @@ def main():
                 awake = False
                 print("⌨️  Text mode ON.\n")
             elif cmd == "/doctor":
-                for line in senses.doctor() + [f"MCP — {m}" for m in mcp_client.status()]:
+                for line in (senses.doctor() + senses.live_check() + [f"MCP — {m}" for m in mcp_client.status()]
+                             + ["Alerts — " + "; ".join(watcher.status())]):
                     print(f"  {line}")
             elif cmd == "/model":
                 name = arg.strip()

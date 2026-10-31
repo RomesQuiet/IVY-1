@@ -20,7 +20,7 @@ import re
 import sys
 import traceback
 
-from . import config
+from . import config, watcher
 from .toolkit import TOOLS, tool
 
 _loaded: dict[str, list[str]] = {}    # skill name → tool names it registered
@@ -33,7 +33,7 @@ def _load(path) -> list[str]:
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
-    added = sorted(set(TOOLS) - before)
+    added = sorted(set(TOOLS) - before) + watcher.rule_names(name)
     _loaded[path.stem] = added
     return added
 
@@ -52,6 +52,7 @@ def load_all():
 def _unload(name: str):
     for t in _loaded.pop(name, []):
         TOOLS.pop(t, None)
+    watcher.forget_module(f"ivy_skill_{name}")
     sys.modules.pop(f"ivy_skill_{name}", None)
 
 
@@ -64,11 +65,13 @@ def create_skill(name: str, code: str) -> str:
     `from ivy.toolkit import tool` and define functions decorated with @tool(...) that have
     type hints, a docstring, and return a short string. Keyword args to @tool describe
     parameters. Network: use `requests`. Risky actions: @tool(confirm="action").
-    Replaces an existing skill with the same name."""
+    For "tell me when X" requests, instead use `from ivy.watcher import watch` and a function
+    decorated @watch(every=seconds) that returns the text to announce, or None: it runs in the
+    background from now on. Replaces an existing skill with the same name."""
     if not re.fullmatch(r"[a-z][a-z0-9_]{1,40}", name):
         return "Skill name must be snake_case letters/digits, e.g. 'crypto_prices'."
-    if "@tool" not in code:
-        return "The code has no @tool function — nothing for Ivy to call."
+    if "@tool" not in code and "@watch" not in code:
+        return "The code has no @tool or @watch function — nothing for Ivy to use."
     path = config.SKILLS_DIR / f"{name}.py"
     config.SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     previous = path.read_text() if path.exists() else None
@@ -86,7 +89,7 @@ def create_skill(name: str, code: str) -> str:
             _load(path)
         return f"The skill failed to load, nothing was saved. Fix and retry:\n{err[-1200:]}"
     if not added:
-        return "Loaded, but it registered no tools — did you decorate the functions with @tool?"
+        return "Loaded, but it registered nothing — did you decorate the functions?"
     return f"Learned skill '{name}'. New tools available right now: {', '.join(added)}."
 
 

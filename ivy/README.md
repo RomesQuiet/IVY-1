@@ -31,7 +31,18 @@ python ivy.py                                     # terminal
 ```
 
 Esc or the ■ button stops a request. 💤 turns on "OK Ivy" wake-word mode.
-`/doctor` shows what she can see and do right now.
+`/doctor` shows what she can see and do right now, and tests it live.
+
+## Always there
+
+- **⌥Space** shows or hides Ivy from any app (`HOTKEY` in `config.py`). It needs no permission.
+- She lives in the menu bar. The red window button hides her; **Quit Ivy** in the menu exits.
+- **Settings** (⚙, ⌘, or the menu bar): neutral themes, plus sliders for the accent and
+  background colours. Saved in `settings.json`.
+- She speaks up on her own (`ALERTS` in `config.py`): low battery, calendar events, finished
+  downloads, low disk space. Alerts stay silent during quiet hours and while you're talking.
+  Recurring calendar events are missed, because Calendar's scripting doesn't expand them.
+- Ask "tell me when…" and she writes a background rule as a skill. See the top of `ivy/watcher.py`.
 
 ## Giving Ivy eyes and hands
 

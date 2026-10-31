@@ -8,3 +8,4 @@ state.json
 .DS_Store
 music_cache.json
 mcp_servers.json
+settings.json

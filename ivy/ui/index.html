@@ -4,31 +4,39 @@
 <meta charset="UTF-8">
 <title>IVY-1</title>
 <style>
+  /* Graphite, the default. theme() in the script below recalculates all of these. */
   :root {
-    --bg: #0a0e14;
-    --panel: #11161f;
-    --border: #1e2733;
-    --accent: #4dd0e1;
-    --accent-dim: #1e5f68;
-    --text: #d4dae3;
-    --text-dim: #6b7785;
-    --user: #7ab8ff;
-    --error: #ff6b6b;
-    --ok: #66bb6a;
+    color-scheme: dark;
+    --bg: #1c1c1e;
+    --panel: #2c2c2e;
+    --panel-soft: #242426;
+    --border: #3a3a3c;
+    --accent: #d1d1d6;
+    --accent-wash: rgba(209, 209, 214, 0.08);
+    --accent-ink: #1c1c1e;
+    --accent-text: #d1d1d6;
+    --text: #f5f5f7;
+    --text-dim: #98989d;
+    --error: #ff453a;
+    --ok: #30d158;
+    --warn: #ff9f0a;
+    --pill: 980px;
+    --card: 12px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
     height: 100%;
     background: var(--bg);
     color: var(--text);
-    font-family: -apple-system, "SF Mono", Menlo, monospace;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
     font-size: 13px;
     overflow: hidden;
+    -webkit-font-smoothing: antialiased;
   }
   body { display: flex; flex-direction: column; }
 
   header {
-    padding: 14px 20px;
+    padding: 10px 16px;
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
@@ -39,8 +47,8 @@
   header button, header .indicator, header select { -webkit-app-region: no-drag; }
   .title {
     font-weight: 600;
-    letter-spacing: 4px;
-    color: var(--accent);
+    letter-spacing: 3px;
+    color: var(--accent-text);
     font-size: 12px;
   }
   .indicator {
@@ -49,24 +57,49 @@
     transition: background 0.2s, box-shadow 0.2s;
     margin-left: auto;
   }
-  .indicator.idle      { background: #3a4552; }
+  .indicator.idle      { background: var(--border); }
   .indicator.listening { background: var(--accent); box-shadow: 0 0 12px var(--accent); animation: pulse 1.2s infinite; }
-  .indicator.thinking  { background: #ffb74d; box-shadow: 0 0 12px #ffb74d; animation: pulse 0.6s infinite; }
+  .indicator.thinking  { background: var(--warn); box-shadow: 0 0 12px var(--warn); animation: pulse 0.6s infinite; }
   .indicator.speaking  { background: var(--ok); box-shadow: 0 0 12px var(--ok); animation: pulse 0.9s infinite; }
   @keyframes pulse {
     0%, 100% { opacity: 1; transform: scale(1); }
     50%      { opacity: 0.55; transform: scale(0.85); }
   }
   .state-label {
-    font-size: 10px; color: var(--text-dim);
-    text-transform: uppercase; letter-spacing: 1.5px;
+    font-size: 11px; color: var(--text-dim);
+    text-transform: capitalize;
   }
+
+  /* ---------- controls: pills and circles, like macOS ---------- */
+  button, select {
+    -webkit-appearance: none; appearance: none;
+    font-family: inherit;
+    border: none; outline: none;
+    border-radius: var(--pill);
+    background-color: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s, transform 0.1s, filter 0.15s;
+    white-space: nowrap;
+  }
+  button { padding: 7px 14px; font-size: 13px; font-weight: 500; }
+  button:hover, select:hover { filter: brightness(1.12); }
+  button:active { transform: scale(0.96); }
+  button:focus-visible, select:focus-visible, input:focus-visible { box-shadow: 0 0 0 3px var(--accent-wash), 0 0 0 1px var(--accent); }
+  button.active, button.primary { background-color: var(--accent); color: var(--accent-ink); }
+  .icon-btn {
+    width: 34px; height: 34px; padding: 0; font-size: 14px; flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+  }
+  .icon-btn svg { width: 17px; height: 17px; fill: currentColor; }
   select {
-    background: var(--panel); color: var(--text);
-    border: 1px solid var(--border); border-radius: 5px;
-    padding: 4px 6px; font-family: inherit; font-size: 11px;
-    outline: none;
+    padding: 6px 28px 6px 12px; font-size: 12px; font-weight: 500;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238e8e93' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 11px center; background-size: 9px;
   }
+  #stopBtn { display: none; color: var(--error); }
+  body.busy #stopBtn { display: inline-flex; }
 
   /* main wrapper */
   #main {
@@ -97,22 +130,21 @@
     white-space: pre-wrap;
     word-wrap: break-word;
   }
-  .msg.user { color: var(--user); }
+  .msg.user { color: var(--accent-text); }
   .msg.user::before { content: "You › "; color: var(--text-dim); }
   .msg.assistant { color: var(--text); }
-  .msg.assistant::before { content: "Ivy › "; color: var(--accent); font-weight: 600; }
+  .msg.assistant::before { content: "Ivy › "; color: var(--accent-text); font-weight: 600; }
   .msg.tool {
     display: flex; flex-direction: column; gap: 4px;
-    color: var(--text-dim); font-size: 12px; margin: 4px 0 4px 8px;
-    padding: 5px 10px; border-left: 2px solid var(--accent-dim);
-    background: rgba(77, 208, 225, 0.04); border-radius: 0 6px 6px 0;
+    color: var(--text-dim); font-size: 12px; margin: 4px 0;
+    padding: 7px 12px; background: var(--accent-wash); border-radius: var(--card);
     cursor: pointer; white-space: normal; max-width: 760px;
   }
   .msg.tool .row { display: flex; align-items: center; gap: 8px; }
   .msg.tool .status { width: 14px; text-align: center; flex: none; }
-  .msg.tool.running .status::before { content: "◌"; display: inline-block; animation: spin 1s linear infinite; color: #ffb74d; }
+  .msg.tool.running .status::before { content: "◌"; display: inline-block; animation: spin 1s linear infinite; color: var(--warn); }
   .msg.tool.ok .status::before { content: "✓"; color: var(--ok); }
-  .msg.tool.fail { border-left-color: var(--error); }
+  .msg.tool.fail { box-shadow: inset 0 0 0 1px var(--error); }
   .msg.tool.fail .status::before { content: "✗"; color: var(--error); }
   .msg.tool .more {
     display: none; white-space: pre-wrap; font-size: 11px; color: var(--text-dim);
@@ -125,12 +157,11 @@
   .typing span:nth-child(2) { animation-delay: 0.2s; }
   .typing span:nth-child(3) { animation-delay: 0.4s; }
   #suggestions { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 16px; }
-  #suggestions button { font-size: 12px; padding: 6px 12px; border-radius: 14px; }
-  #stopBtn { display: none; color: var(--error); }
-  body.busy #stopBtn { display: inline-block; }
-  .msg.system { color: var(--text-dim); font-size: 11px; font-style: italic; }
+  #suggestions button { font-size: 12px; padding: 6px 12px; }
+  .msg.system { color: var(--text-dim); font-size: 11px; }
   .msg.error { color: var(--error); }
-  .msg.note { color: #ffb74d; }
+  .msg.note { color: var(--warn); }
+  .msg.note button { margin-left: 8px; padding: 3px 12px; font-size: 12px; }
 
   .cursor {
     display: inline-block; width: 8px; background: var(--accent);
@@ -139,30 +170,17 @@
   @keyframes blink { 50% { opacity: 0; } }
 
   footer {
-    padding: 12px 16px;
+    padding: 10px 14px;
     border-top: 1px solid var(--border);
     display: flex; gap: 8px; align-items: center;
-    background: var(--panel);
+    background: var(--panel-soft);
   }
-  #input {
-    flex: 1; background: transparent; border: 1px solid var(--border);
-    color: var(--text); padding: 9px 12px; border-radius: 6px;
+  #input, #consoleInput {
+    flex: 1; width: 100%; background: var(--panel); border: none;
+    color: var(--text); padding: 9px 16px; border-radius: var(--pill);
     font-family: inherit; font-size: 13px; outline: none;
-    transition: border-color 0.15s;
   }
-  #input:focus { border-color: var(--accent-dim); }
-
-  button {
-    background: var(--panel); border: 1px solid var(--border);
-    color: var(--text); padding: 9px 14px; border-radius: 6px;
-    font-family: inherit; font-size: 12px; cursor: pointer;
-    transition: all 0.15s; white-space: nowrap;
-  }
-  button:hover { border-color: var(--accent-dim); color: var(--accent); }
-  button.active {
-    background: var(--accent-dim); border-color: var(--accent); color: var(--accent);
-  }
-  .icon-btn { padding: 9px 12px; font-size: 14px; }
+  #input::placeholder, #consoleInput::placeholder { color: var(--text-dim); }
 
   /* sidebar */
   #sidebar {
@@ -171,9 +189,8 @@
     border-left: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    background: #0d1218;
+    background: var(--panel-soft);
     overflow: hidden;
-    transition: margin-right 0.2s;
   }
   #sidebar.hidden {
     display: none;
@@ -185,7 +202,7 @@
     font-size: 11px;
     line-height: 1.5;
     color: var(--text-dim);
-    font-family: -apple-system, "SF Mono", Menlo, monospace;
+    font-family: "SF Mono", Menlo, monospace;
   }
   #console::-webkit-scrollbar { width: 6px; }
   #console::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -194,26 +211,57 @@
     word-wrap: break-word;
     margin-bottom: 2px;
   }
-  .console-line.cmd { color: var(--user); }
+  .console-line.cmd { color: var(--accent-text); }
   .console-line.err { color: var(--error); }
   .console-line.out { color: var(--text); }
   #console-input-wrap {
     padding: 8px 10px;
     border-top: 1px solid var(--border);
-    background: var(--panel);
   }
-  #consoleInput {
-    width: 100%;
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 7px 10px;
-    border-radius: 5px;
-    font-family: inherit;
-    font-size: 12px;
-    outline: none;
+
+  /* ---------- settings sheet ---------- */
+  #settings {
+    margin: auto; width: 400px; max-width: calc(100vw - 32px); max-height: calc(100vh - 40px);
+    overflow-y: auto; padding: 20px; border: 1px solid var(--border); border-radius: 18px;
+    background: var(--panel-soft); color: var(--text);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
   }
-  #consoleInput:focus { border-color: var(--accent-dim); }
+  #settings::backdrop { background: rgba(0, 0, 0, 0.35); }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+  .sheet-head h2 { font-size: 17px; font-weight: 600; }
+  #settings h3 {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; font-weight: 600; color: var(--text-dim); margin: 18px 0 10px;
+  }
+  .swatch { width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 1px var(--border); }
+  #presets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  #presets button {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    padding: 0; background: none; font-size: 11px; color: var(--text-dim); font-weight: 400;
+  }
+  #presets button:hover { filter: none; color: var(--text); }
+  #presets button i {
+    display: flex; align-items: center; justify-content: center;
+    width: 44px; height: 44px; border-radius: 50%;
+    box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.45);
+  }
+  #presets button i b { width: 16px; height: 16px; border-radius: 50%; }
+  #presets button[aria-checked="true"] { color: var(--text); font-weight: 600; }
+  #presets button[aria-checked="true"] i { box-shadow: 0 0 0 2px var(--panel-soft), 0 0 0 4px var(--accent); }
+  .slider { display: grid; grid-template-columns: 76px 1fr 34px; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .slider label { font-size: 12px; }
+  .slider output { font-size: 11px; color: var(--text-dim); text-align: right; font-variant-numeric: tabular-nums; }
+  input[type="range"] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 8px;
+    border-radius: var(--pill); outline-offset: 4px; cursor: pointer;
+    background: var(--track, var(--border));
+    box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.3);
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45), 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+  }
+  .sheet-foot { display: flex; justify-content: flex-end; margin-top: 18px; }
 </style>
 </head>
 <body>
@@ -228,7 +276,10 @@
   </select>
   <span class="state-label" id="stateLabel">idle</span>
   <span class="indicator idle" id="indicator"></span>
-  <button id="sidebarBtn" class="icon-btn" title="Toggle console">&gt;_</button>
+  <button id="sidebarBtn" class="icon-btn" title="Toggle console" aria-label="Toggle console">&gt;_</button>
+  <button id="settingsBtn" class="icon-btn" title="Settings (⌘,)" aria-label="Settings">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6a.5.5 0 0 0 .1-.6l-1.9-3.3a.5.5 0 0 0-.6-.2l-2.4 1a7.3 7.3 0 0 0-1.7-1l-.4-2.5a.5.5 0 0 0-.5-.4h-3.8a.5.5 0 0 0-.5.4l-.4 2.5a7.3 7.3 0 0 0-1.7 1l-2.4-1a.5.5 0 0 0-.6.2L2.5 8.8a.5.5 0 0 0 .1.6L4.6 11a7.6 7.6 0 0 0 0 2l-2 1.6a.5.5 0 0 0-.1.6l1.9 3.3c.1.2.4.3.6.2l2.4-1c.5.4 1.1.7 1.7 1l.4 2.5c0 .2.3.4.5.4h3.8c.2 0 .5-.2.5-.4l.4-2.5c.6-.3 1.2-.6 1.7-1l2.4 1c.2.1.5 0 .6-.2l1.9-3.3a.5.5 0 0 0-.1-.6l-2-1.6ZM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>
+  </button>
 </header>
 
 <div id="main">
@@ -236,9 +287,9 @@
     <div id="chat"></div>
     <footer>
       <input id="input" type="text" placeholder="Ask Ivy anything — or tell her to do something…" autofocus />
-      <button id="stopBtn" class="icon-btn" title="Stop (Esc)">■</button>
-      <button id="wakeBtn" class="icon-btn" title="Wake-word mode">💤</button>
-      <button id="muteBtn" class="icon-btn" title="Mute voice">🔊</button>
+      <button id="stopBtn" class="icon-btn" title="Stop (Esc)" aria-label="Stop">■</button>
+      <button id="wakeBtn" class="icon-btn" title="Wake-word mode" aria-label="Wake-word mode">💤</button>
+      <button id="muteBtn" class="icon-btn" title="Mute voice" aria-label="Mute voice">🔊</button>
     </footer>
   </div>
 
@@ -250,6 +301,20 @@
     </div>
   </aside>
 </div>
+
+<dialog id="settings" aria-labelledby="settingsTitle">
+  <div class="sheet-head">
+    <h2 id="settingsTitle">Settings</h2>
+    <button id="settingsDone" class="primary">Done</button>
+  </div>
+  <h3>Neutral themes</h3>
+  <div id="presets" role="radiogroup" aria-label="Neutral themes"></div>
+  <h3><span class="swatch" id="accentSwatch"></span>Accent colour</h3>
+  <div id="accentSliders"></div>
+  <h3><span class="swatch" id="bgSwatch"></span>Background colour</h3>
+  <div id="bgSliders"></div>
+  <div class="sheet-foot"><button id="resetTheme">Reset to Graphite</button></div>
+</dialog>
 
 <script>
 const chatEl = document.getElementById('chat');
@@ -391,6 +456,8 @@ window.setWakeUI = function(on) {
   modeEl.textContent = on ? 'wake' : 'text';
 };
 
+window.showAlert = (text) => { addMsg('note', '🔔 ' + text); };
+
 // macOS is keeping Ivy blind: say so, and offer the fix.
 window.showPermissions = (missing) => {
   const what = missing.map(m => m === 'screen' ? 'see the screen' : 'click and type').join(' or ');
@@ -435,7 +502,10 @@ inputEl.addEventListener('keydown', (e) => {
     send();
   }
 });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') stop(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !settingsEl.open) stop();
+  if (e.key === ',' && e.metaKey) { e.preventDefault(); window.openSettings(); }
+});
 document.getElementById('stopBtn').addEventListener('click', stop);
 
 wakeBtn.addEventListener('click', async () => {
@@ -447,6 +517,11 @@ wakeBtn.addEventListener('click', async () => {
 });
 
 let muted = false;
+window.setMuteUI = (on) => {
+  muted = on;
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  muteBtn.classList.toggle('active', muted);
+};
 muteBtn.addEventListener('click', async () => {
   muted = !muted;
   muteBtn.textContent = muted ? '🔇' : '🔊';
@@ -475,13 +550,156 @@ consoleInput.addEventListener('keydown', async (e) => {
   }
 });
 
+// ---------- theme ----------
+// A theme is six numbers: hue/saturation/lightness for the accent and the background.
+// Everything else is calculated from them, so text stays readable wherever the sliders go.
+const PRESETS = {
+  Graphite: {ah: 240, as: 6,  al: 84, bh: 240, bs: 3,  bl: 11},
+  Slate:    {ah: 215, as: 16, al: 78, bh: 215, bs: 16, bl: 14},
+  Stone:    {ah: 35,  as: 12, al: 78, bh: 30,  bs: 7,  bl: 13},
+  Snow:     {ah: 240, as: 3,  al: 26, bh: 240, bs: 12, bl: 96},
+};
+const RANGES = {h: [0, 360, '°'], s: [0, 100, '%'], l: [0, 100, '%']};
+const HUES = 'hsl(0 90% 55%),hsl(60 90% 55%),hsl(120 90% 45%),hsl(180 90% 45%),hsl(240 90% 60%),hsl(300 90% 55%),hsl(360 90% 55%)';
+const settingsEl = document.getElementById('settings');
+let theme = {...PRESETS.Graphite};
+
+function hslToRgb(h, s, l) {
+  s /= 100; l /= 100;
+  const f = n => {
+    const k = (n + h / 30) % 12;
+    return Math.round(255 * (l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
+  };
+  return [f(0), f(8), f(4)];
+}
+const css = c => `rgb(${c.join(',')})`;
+const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+function luminance(c) {
+  const [r, g, b] = c.map(v => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function contrast(a, b) {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+const WHITE = [245, 245, 247], BLACK = [29, 29, 31];
+const toHex = c => '#' + c.map(v => v.toString(16).padStart(2, '0')).join('');
+function inkOn(c) {
+  const soft = contrast(WHITE, c) >= contrast(BLACK, c) ? WHITE : BLACK;
+  if (contrast(soft, c) >= 4.5) return soft;
+  return luminance(c) > 0.179 ? [0, 0, 0] : [255, 255, 255];     // mid tones need the extremes
+}
+function dimOn(text, bg) {
+  for (const t of [0.42, 0.32, 0.22, 0.12]) {
+    if (contrast(mix(text, bg, t), bg) >= 3.2) return mix(text, bg, t);
+  }
+  return text;
+}
+
+function cleanTheme(t) {
+  const out = {};
+  for (const k of Object.keys(PRESETS.Graphite)) {
+    const v = t ? t[k] : undefined;
+    const max = k[1] === 'h' ? 360 : 100;
+    out[k] = Number.isFinite(v) ? Math.max(0, Math.min(max, Math.round(v))) : PRESETS.Graphite[k];
+  }
+  return out;
+}
+
+function applyTheme(t) {
+  theme = cleanTheme(t);
+  const bg = hslToRgb(theme.bh, theme.bs, theme.bl);
+  const accent = hslToRgb(theme.ah, theme.as, theme.al);
+  const text = inkOn(bg);
+  const dark = luminance(text) > luminance(bg);
+  const vars = {
+    '--bg': css(bg), '--panel': css(mix(bg, text, 0.11)), '--panel-soft': css(mix(bg, text, 0.05)),
+    '--border': css(mix(bg, text, 0.18)), '--text': css(text), '--text-dim': css(dimOn(text, bg)),
+    '--accent': css(accent), '--accent-ink': css(inkOn(accent)),
+    '--accent-wash': `rgba(${accent.join(',')},0.10)`,
+    // an accent too close to the background can't be used for words
+    '--accent-text': css(contrast(accent, bg) >= 3 ? accent : text),
+    '--error': dark ? '#ff453a' : '#d70015', '--ok': dark ? '#30d158' : '#248a3d',
+    '--warn': dark ? '#ff9f0a' : '#b25000',
+  };
+  const root = document.documentElement;
+  for (const [k, v] of Object.entries(vars)) root.style.setProperty(k, v);
+  root.style.colorScheme = dark ? 'dark' : 'light';
+  document.getElementById('accentSwatch').style.background = css(accent);
+  document.getElementById('bgSwatch').style.background = css(bg);
+  syncControls();
+}
+
+function syncControls() {
+  for (const input of settingsEl.querySelectorAll('input[type=range]')) {
+    const key = input.dataset.key, part = key[0];
+    const [h, s, l] = [theme[part + 'h'], theme[part + 's'], theme[part + 'l']];
+    input.value = theme[key];
+    input.nextElementSibling.textContent = theme[key] + RANGES[key[1]][2];
+    input.setAttribute('aria-valuetext', input.nextElementSibling.textContent);
+    input.style.setProperty('--track', key[1] === 'h' ? `linear-gradient(to right,${HUES})`
+      : key[1] === 's' ? `linear-gradient(to right,hsl(${h} 0% ${l}%),hsl(${h} 100% ${l}%))`
+      : `linear-gradient(to right,#000,hsl(${h} ${s}% 50%),#fff)`);
+  }
+  for (const b of document.querySelectorAll('#presets button')) {
+    const p = PRESETS[b.dataset.preset];
+    const on = Object.keys(p).every(k => p[k] === theme[k]);
+    b.setAttribute('aria-checked', on);
+  }
+}
+
+let saveTimer = null;
+function saveTheme() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    const window_bg = toHex(hslToRgb(theme.bh, theme.bs, theme.bl));
+    try { await pywebview.api.save_settings({theme, window_bg}); } catch (e) {}
+  }, 250);
+}
+
+function setTheme(t) { applyTheme(t); saveTheme(); }
+
+function buildSettings() {
+  for (const [part, host] of [['a', 'accentSliders'], ['b', 'bgSliders']]) {
+    for (const [key, name] of [['h', 'Hue'], ['s', 'Saturation'], ['l', 'Lightness']]) {
+      const row = document.createElement('div');
+      row.className = 'slider';
+      const id = `slider-${part}${key}`;
+      row.innerHTML = `<label for="${id}">${name}</label>` +
+        `<input type="range" id="${id}" data-key="${part}${key}" min="${RANGES[key][0]}" max="${RANGES[key][1]}">` +
+        '<output></output>';
+      row.querySelector('input').addEventListener('input', (e) => {
+        setTheme({...theme, [e.target.dataset.key]: Number(e.target.value)});
+      });
+      document.getElementById(host).appendChild(row);
+    }
+  }
+  for (const [name, p] of Object.entries(PRESETS)) {
+    const b = document.createElement('button');
+    b.dataset.preset = name;
+    b.setAttribute('role', 'radio');
+    const [bg, accent] = [hslToRgb(p.bh, p.bs, p.bl), hslToRgb(p.ah, p.as, p.al)];
+    b.innerHTML = `<i style="background:${css(bg)}"><b style="background:${css(accent)}"></b></i>${name}`;
+    b.addEventListener('click', () => setTheme(p));
+    document.getElementById('presets').appendChild(b);
+  }
+}
+
+window.openSettings = () => { if (!settingsEl.open) settingsEl.showModal(); };
+document.getElementById('settingsBtn').addEventListener('click', window.openSettings);
+document.getElementById('settingsDone').addEventListener('click', () => settingsEl.close());
+document.getElementById('resetTheme').addEventListener('click', () => setTheme(PRESETS.Graphite));
+settingsEl.addEventListener('close', () => inputEl.focus());
+buildSettings();
+applyTheme(PRESETS.Graphite);
+
 // ---------- startup ----------
 let readyShown = false;
 window.onReady = () => {
   if (readyShown) return;
   readyShown = true;
   if (window._bootMsg) window._bootMsg.remove();
-  addMsg('system', 'IVY-1 — ready. Type, or press 💤 and say "OK Ivy". Esc stops her.');
+  addMsg('system', 'IVY-1 — ready. Type, or press 💤 and say "OK Ivy". ⌥Space shows or hides her from any app; Esc stops her.');
   const sug = document.createElement('div');
   sug.id = 'suggestions';
   for (const q of ["What's the weather?", "Play lofi hip hop on YouTube", "Play Queen on Spotify",
@@ -496,6 +714,10 @@ window.onReady = () => {
 };
 
 window.addEventListener('pywebviewready', async () => {
+  try {
+    const saved = await pywebview.api.get_settings();
+    if (saved && saved.theme) applyTheme(saved.theme);
+  } catch (e) {}
   appendConsole('IVY-1 — console ready (/help for commands)');
   let ready = false;
   try { ready = await pywebview.api.is_ready(); } catch (e) {}

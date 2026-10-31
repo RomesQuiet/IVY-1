@@ -68,7 +68,8 @@ GROUPS = {
                  r"\b(click|press|type|scroll|button|window|automate|safari|chrome|tab|javascript|"
                  r"keyboard|shortcut|minimi|maximi|fill|form|screen|menu|dialog|wait for)\b"),
     "skills":   ("learn a new permanent ability (write a skill), list or remove skills",
-                 r"\b(skill|learn|teach|new ability|from now on you can|build (a|an) tool)\b"),
+                 r"\b(skill|learn|teach|new ability|from now on you can|build (a|an) tool|"
+                 r"(tell|alert|notify|warn|let) me (know )?(when|if)|keep an eye|watch for|monitor)\b"),
 }
 
 

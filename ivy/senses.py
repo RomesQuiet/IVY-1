@@ -86,6 +86,30 @@ def doctor() -> list[str]:
     return lines
 
 
+def live_check() -> list[str]:
+    """Actually try each sense, for /doctor. Reports counts, never screen contents."""
+    lines = []
+    if permissions()["screen"]:
+        t0 = time.time()
+        try:
+            blocks, region = read_text()
+            lines.append(f"Live test: read {len(blocks)} pieces of text from {region['app']} "
+                         f"in {time.time() - t0:.1f}s")
+        except Exception as e:
+            lines.append(f"Live test: screen reading FAILED — {e}")
+        titled = sum(1 for w in windows() if w["title"])
+        lines.append(f"Live test: {titled} of {len(windows())} window titles visible")
+    else:
+        lines.append("Live test: skipped screen reading (Screen Recording is off)")
+    from .tools import default_browser
+    browser = default_browser()
+    if any(w["app"] == browser for w in windows()):
+        readable = bool(browser_tab(browser)[1])
+        lines.append(f"Live test: {browser} tab " + ("readable" if readable else
+                     "NOT readable — allow Automation for it in System Settings → Privacy & Security"))
+    return lines
+
+
 def require_screen():
     if not permissions()["screen"]:
         raise PermissionError(_SCREEN_HELP)

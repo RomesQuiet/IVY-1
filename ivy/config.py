@@ -23,7 +23,7 @@ CLOUD_VISION = "ask"
 WAKE_WORD = "ok_ivy"
 WAKE_MODEL_PATH = str(Path(__file__).resolve().parent / "models" / "ok_ivy.onnx")
 WAKE_THRESHOLD = 0.75
-TTS_VOICE = "Kate (Enhanced)"   # ← use whatever the grep output showed
+TTS_VOICE = "Siri (Voice 1 )"   # ← use whatever the grep output showed
 MUTED = False
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -67,6 +67,18 @@ PROVIDERS = [
         "tpm": 20000, "models": {"main": os.getenv("OPENROUTER_MODEL", "openai/gpt-oss-120b:free")},
     },
 ]
+
+# --- Always available ---
+HOTKEY = "option+space"     # show or hide Ivy from any app, e.g. "ctrl+option+i"
+
+# What Ivy speaks up about on her own. Set any value to None to turn it off.
+ALERTS = {
+    "battery": (20, 10),        # percent, while on battery
+    "calendar_minutes": 10,     # warn this long before an event (recurring events are missed)
+    "downloads": True,          # a download in ~/Downloads finished
+    "disk_gb": 5,               # free disk space below this
+    "quiet_hours": (23, 7),     # show alerts, but stay silent, in these hours
+}
 
 # --- Apps ---
 MUSIC_APP = "Spotify"       # "Spotify" or "Music" — used when you just say "play X"

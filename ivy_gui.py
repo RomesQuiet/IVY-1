@@ -17,6 +17,21 @@ from ivy import config, audio
 voice = None
 
 UI_PATH = Path(__file__).parent / "ivy" / "ui" / "index.html"
+SETTINGS_PATH = config.ROOT / "settings.json"
+
+
+def load_settings() -> dict:
+    try:
+        data = json.loads(SETTINGS_PATH.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def window_colour() -> str:
+    """pywebview refuses to open a window unless this is exactly #RRGGBB."""
+    colour = load_settings().get("window_bg")
+    return colour if isinstance(colour, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", colour) else "#1c1c1e"
 
 # =====================================================================
 # LogTee — mirrors print() into the GUI console
@@ -83,6 +98,9 @@ class IvyApp:
         self.brain = None
         self.booted = threading.Event()
         self.window = None
+        self.menu = None
+        self.visible = True
+        self.quitting = False
         self._ready = False
         self._pending = []
         self._js_lock = threading.Lock()
@@ -115,6 +133,11 @@ class IvyApp:
     def _js(self, code: str):
         if not self.window:
             return
+        # evaluate_js waits for the main thread, so calling it from there (a print in the
+        # menu-bar code, say, comes through LogTee) would freeze the app for good.
+        if threading.current_thread() is threading.main_thread():
+            threading.Thread(target=self._js, args=(code,), daemon=True).start()
+            return
         with self._js_lock:
             try:
                 self.window.evaluate_js(code)
@@ -123,6 +146,88 @@ class IvyApp:
 
     def _state(self, s):
         self._js(f"setState({json.dumps(s)})")
+        if self.menu:
+            self.menu.set_state(s)
+
+    # -----------------------------------------------------------------
+    # Menu bar, hotkey, window
+    # -----------------------------------------------------------------
+
+    def _install_menu(self):
+        """Runs on the main thread once the window exists."""
+        from ivy import menubar
+        self.menu = menubar.MenuBar(self)
+        menubar.on_reopen(self.show_window)
+        if menubar.register_hotkey(config.HOTKEY, self.toggle_window):
+            print(f"⌨️  {menubar.pretty_hotkey(config.HOTKEY)} shows or hides Ivy from any app.")
+
+    def show_window(self):
+        from PyObjCTools import AppHelper
+        from ivy import menubar
+
+        def run():
+            self.window.show()
+            AppHelper.callAfter(menubar.activate, True)
+            self._js("document.getElementById('input').focus()")
+
+        self.visible = True
+        threading.Thread(target=run, daemon=True).start()
+
+    def hide_window(self):
+        from PyObjCTools import AppHelper
+        from ivy import menubar
+        self.visible = False
+        threading.Thread(target=self.window.hide, daemon=True).start()
+        AppHelper.callAfter(menubar.activate, False)
+
+    def toggle_window(self):
+        from ivy import menubar
+        if self.visible and menubar.is_active():
+            self.hide_window()
+        else:
+            self.show_window()
+
+    def toggle_wake(self):
+        threading.Thread(target=self.set_wake, args=(not self.audio_running,), daemon=True).start()
+
+    def toggle_mute(self):
+        self.set_mute(not config.MUTED)
+        self._js(f"window.setMuteUI({json.dumps(config.MUTED)})")
+
+    def _sync_menu(self):
+        if self.menu:
+            self.menu.set_checks(self.audio_running, config.MUTED)
+
+    def _on_closing(self):
+        """The red button hides Ivy to the menu bar; only Quit really exits."""
+        if self.quitting:
+            return True
+        self.hide_window()
+        return False
+
+    def quit(self):
+        self.quitting = True
+        threading.Thread(target=self.window.destroy, daemon=True).start()
+
+    # -----------------------------------------------------------------
+    # Proactive alerts
+    # -----------------------------------------------------------------
+
+    def _on_alert(self, text: str):
+        from ivy import tools, watcher
+        print(f"🔔 {text}")
+        self._js(f"window.showAlert({json.dumps(text)})")
+        try:
+            tools.notify("Ivy", text)
+        except Exception:
+            pass
+        talking = self._chat_lock.locked() or (self.audio_running and not self.sleeping)
+        if not talking:
+            # keep it in the conversation so "what was that?" works
+            self.brain.messages.append({"role": "assistant", "content": f"(I alerted Romeu: {text})"})
+            if not watcher.in_quiet_hours():
+                voice.chime()
+                voice.speak_async(text)
 
     # -----------------------------------------------------------------
     # Startup (background)
@@ -145,8 +250,9 @@ class IvyApp:
         self._js("window.onReady && window.onReady()")
         self._check_senses()
         voice.warm_up()   # load the voice + open the Groq connection
-        from ivy import mcp_client, senses
+        from ivy import mcp_client, senses, watcher
         senses.warm_up()
+        watcher.start(self._on_alert)
         mcp_client.load_all()
 
     def _check_senses(self):
@@ -177,6 +283,21 @@ class IvyApp:
 
     def is_ready(self):
         return self.booted.is_set()
+
+    def get_settings(self):
+        return load_settings()
+
+    def save_settings(self, changes: dict):
+        """Saved through Python because pywebview's web storage is wiped on every launch."""
+        data = {**load_settings(), **changes}
+        temp = SETTINGS_PATH.with_suffix(".tmp")
+        temp.write_text(json.dumps(data, indent=2))
+        temp.replace(SETTINGS_PATH)
+        return {"ok": True}
+
+    def open_settings(self):
+        self.show_window()
+        self._js("window.openSettings()")
 
     def stop(self):
         """Stop button / Esc: cancel the running request and stop talking."""
@@ -209,7 +330,7 @@ class IvyApp:
     def _slash(self, text: str):
         cmd, _, arg = text.partition(" ")
         arg = arg.strip()
-        if cmd not in ("/help", "/quit") and not self.booted.wait(timeout=30):
+        if cmd not in ("/help", "/quit", "/settings") and not self.booted.wait(timeout=30):
             print("Still starting up — try again in a moment.")
             return {"ok": False}
 
@@ -239,12 +360,16 @@ class IvyApp:
             if config.MUTED:
                 voice.stop_speaking()
             print(f"Voice {'muted' if config.MUTED else 'unmuted'}")
+        elif cmd == "/settings":
+            self._js("window.openSettings()")
         elif cmd == "/doctor":
-            from ivy import mcp_client, senses
+            from ivy import mcp_client, senses, watcher
             for line in senses.doctor():
                 print(line)
+            threading.Thread(target=lambda: [print(l) for l in senses.live_check()], daemon=True).start()
             for line in mcp_client.status():
                 print(f"MCP — {line}")
+            print("Alerts — " + "; ".join(watcher.status()))
             print(self.brain and __import__("ivy.router", fromlist=["get_pool"]).get_pool().status())
         elif cmd == "/help":
             for line in [
@@ -254,13 +379,14 @@ class IvyApp:
                 "/memories     — list long-term memories",
                 "/model <name> — force a model, or 'auto'",
                 "/mute         — toggle voice output",
+                "/settings     — colours and themes",
                 "/doctor       — what Ivy can see and do right now",
                 "/quit         — close IVY-1",
             ]:
                 print(line)
         elif cmd == "/quit":
             if self.window:
-                self.window.destroy()
+                self.quit()
         else:
             print(f"Unknown command: {cmd}")
         return {"ok": True}
@@ -281,6 +407,7 @@ class IvyApp:
                 )
                 self.audio_thread.start()
                 self._js("window.setWakeUI(true)")
+                self._sync_menu()
                 print("🔮 Wake-word mode ON.")
             else:
                 if not self.audio_running:
@@ -290,6 +417,7 @@ class IvyApp:
                     voice.stop_speaking()
                 audio.abort_wake()
                 self._js("window.setWakeUI(false)")
+                self._sync_menu()
                 print("💤 Wake mode OFF.")
         return {"ok": True}
 
@@ -303,6 +431,7 @@ class IvyApp:
         config.MUTED = bool(muted)
         if config.MUTED and voice:
             voice.stop_speaking()
+        self._sync_menu()
         return {"ok": True}
 
     # =================================================================
@@ -378,6 +507,8 @@ class IvyApp:
             try:
                 # Stop any ongoing speech so replies don't overlap
                 voice.stop_speaking()
+                if self.menu:
+                    self.menu.set_state("thinking")
 
                 def on_token(t):
                     self._js(f"window.appendToken({json.dumps(t)})")
@@ -408,6 +539,8 @@ class IvyApp:
                     on_sentence=voice.speak_async,  # always speak
                 )
                 self._js("window.endMessage()")
+                if self.menu:
+                    self.menu.set_state("idle")
 
                 if reply:
                     print(f"IVY-1: {reply}")
@@ -421,6 +554,8 @@ class IvyApp:
                 print(f"[chat error] {e}")
                 self._js(f"window.showError({json.dumps(str(e))})")
                 self._js("window.endMessage()")
+                if self.menu:
+                    self.menu.set_state("idle")
 
 
 # =====================================================================
@@ -441,15 +576,19 @@ def main():
         width=900,
         height=680,
         min_size=(640, 500),
-        background_color="#0a0e14",
+        background_color=window_colour(),
         confirm_close=False,
     )
     app.window = window
 
     def on_loaded():
+        from PyObjCTools import AppHelper
         app._flush_pending()
+        if not app.menu:
+            AppHelper.callAfter(app._install_menu)
 
     window.events.loaded += on_loaded
+    window.events.closing += app._on_closing
 
     threading.Thread(target=app._boot, daemon=True, name="boot").start()
     webview.start(debug=False)
