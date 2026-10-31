@@ -2,7 +2,9 @@
 """IVY-1 — GUI entry point. Single source of truth."""
 
 import json
+import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -18,6 +20,15 @@ voice = None
 
 UI_PATH = Path(__file__).parent / "ivy" / "ui" / "index.html"
 SETTINGS_PATH = config.ROOT / "settings.json"
+
+
+def code_stamp() -> float:
+    """When the code Ivy runs last changed. Skills aren't included: they reload themselves."""
+    files = [Path(__file__), *config.ROOT.glob("ivy/*.py"), *config.ROOT.glob("ivy/ui/*.html")]
+    return max(f.stat().st_mtime for f in files)
+
+
+LOADED_CODE = code_stamp()
 
 
 def load_settings() -> dict:
@@ -157,7 +168,7 @@ class IvyApp:
         """Runs on the main thread once the window exists."""
         from ivy import menubar
         self.menu = menubar.MenuBar(self)
-        menubar.on_reopen(self.show_window)
+        menubar.on_reopen(self.open_latest)
         if menubar.register_hotkey(config.HOTKEY, self.toggle_window):
             print(f"⌨️  {menubar.pretty_hotkey(config.HOTKEY)} shows or hides Ivy from any app.")
 
@@ -173,6 +184,15 @@ class IvyApp:
         self.visible = True
         threading.Thread(target=run, daemon=True).start()
 
+    def open_latest(self):
+        """Show Ivy, restarting first if her code has changed. A running Ivy keeps the code
+        it started with, and opening the app only wakes it, so nothing else ever updates her."""
+        if code_stamp() > LOADED_CODE and not self._chat_lock.locked():
+            print("🔄 New code found — restarting")
+            self.restart()
+        else:
+            self.show_window()
+
     def hide_window(self):
         from PyObjCTools import AppHelper
         from ivy import menubar
@@ -185,7 +205,7 @@ class IvyApp:
         if self.visible and menubar.is_active():
             self.hide_window()
         else:
-            self.show_window()
+            self.open_latest()
 
     def toggle_wake(self):
         threading.Thread(target=self.set_wake, args=(not self.audio_running,), daemon=True).start()
@@ -208,6 +228,30 @@ class IvyApp:
     def quit(self):
         self.quitting = True
         threading.Thread(target=self.window.destroy, daemon=True).start()
+        # A slow tool thread must not leave a windowless Ivy behind: a leftover copy
+        # would catch the next launch and keep running old code.
+        exit_timer = threading.Timer(1.5, os._exit, args=(0,))
+        exit_timer.daemon = True
+        exit_timer.start()
+
+    def restart(self):
+        """Quit, then start a fresh copy once this process is really gone."""
+        import AppKit
+        bundle = str(AppKit.NSBundle.mainBundle().bundlePath())
+        # macOS can still list the old copy for a moment after it exits, and `open` then
+        # fails with procNotFound, so keep trying until it takes.
+        start = f"for i in 1 2 3 4 5 6 7 8 9 10; do sleep 0.3; open {bundle!r} && break; done" \
+            if bundle.endswith("Ivy.app") else f"exec {sys.executable!r} {__file__!r}"
+        subprocess.Popen(["/bin/sh", "-c", f"while kill -0 {os.getpid()} 2>/dev/null; "
+                                           f"do sleep 0.1; done; {start}"],
+                         start_new_session=True)
+        self.quit()
+
+    def _watch_code(self):
+        """While the window is open, offer the update instead of interrupting."""
+        while code_stamp() <= LOADED_CODE:
+            time.sleep(5)
+        self._js("window.showUpdate()")
 
     # -----------------------------------------------------------------
     # Proactive alerts
@@ -253,6 +297,7 @@ class IvyApp:
         from ivy import mcp_client, senses, watcher
         senses.warm_up()
         watcher.start(self._on_alert)
+        threading.Thread(target=self._watch_code, daemon=True, name="code-watch").start()
         mcp_client.load_all()
 
     def _check_senses(self):

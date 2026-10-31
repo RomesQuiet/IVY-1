@@ -53,6 +53,18 @@ if ! command -v clang >/dev/null || [ ! -f "$PY_FRAMEWORK/Python" ]; then
 fi
 
 # ============================================================
+# STOP THE RUNNING APP
+# ============================================================
+# A running Ivy keeps her old code, and opening the app would only wake that copy.
+
+pkill -x Ivy 2>/dev/null || true
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -x -u "$USER" Ivy >/dev/null || break
+    sleep 0.3
+done
+pkill -9 -x -u "$USER" Ivy 2>/dev/null || true
+
+# ============================================================
 # CLEAN OLD BUNDLES
 # ============================================================
 
@@ -159,10 +171,11 @@ codesign --force --deep --sign - "$APP_DIR" 2>/dev/null || \
 echo ""
 echo "✅ Built: $APP_DIR"
 echo ""
-echo "Open it from Finder or Spotlight (not from a terminal, or macOS will ask on the"
-echo "terminal's behalf). The first launch asks for the microphone."
+echo "Opening it now."
 echo ""
 echo "Rebuilding can make macOS forget Ivy's permissions, so only rebuild when this"
 echo "script or launcher.m changes. Python changes don't need a rebuild."
 echo ""
 echo "Logs: $LOG_FILE"
+
+open "$APP_DIR"

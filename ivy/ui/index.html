@@ -458,6 +458,15 @@ window.setWakeUI = function(on) {
 
 window.showAlert = (text) => { addMsg('note', '🔔 ' + text); };
 
+// Her code changed on disk while this window was open.
+window.showUpdate = () => {
+  const div = addMsg('note', 'A new version of Ivy is ready. Restarting clears this chat. ');
+  const b = document.createElement('button');
+  b.textContent = 'Restart';
+  b.addEventListener('click', () => pywebview.api.restart());
+  div.appendChild(b);
+};
+
 // macOS is keeping Ivy blind: say so, and offer the fix.
 window.showPermissions = (missing) => {
   const what = missing.map(m => m === 'screen' ? 'see the screen' : 'click and type').join(' or ');

@@ -85,7 +85,7 @@ class _MenuTarget(NSObject):
         return self
 
     def show_(self, _sender):
-        self.app.show_window()
+        self.app.open_latest()
 
     def settings_(self, _sender):
         self.app.open_settings()
@@ -102,7 +102,7 @@ class _MenuTarget(NSObject):
 
 class MenuBar:
     def __init__(self, app):
-        """`app` provides show_window, open_settings, toggle_wake, toggle_mute and quit."""
+        """`app` provides open_latest, open_settings, toggle_wake, toggle_mute and quit."""
         self.target = _MenuTarget.alloc().initWithApp_(app)
         self.item = AppKit.NSStatusBar.systemStatusBar().statusItemWithLength_(
             AppKit.NSVariableStatusItemLength)
