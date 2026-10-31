@@ -4,7 +4,7 @@
 import threading
 
 from ivy.brain import Brain
-from ivy import config, mcp_client, senses, voice, watcher
+from ivy import config, mcp_client, senses, tasks, voice, watcher
 from ivy.toolkit import describe_call
 
 BANNER = r"""
@@ -22,6 +22,13 @@ def main():
     print("Commands:  /voice  /wake  /text  /reset  /memories  /model <name>  /doctor  /quit\n")
 
     brain = Brain()
+
+    def on_task_done(task):
+        print(f"\n✅ Task {task.id} ({task.status}): {task.goal}\n{task.result}")
+        if task.report:
+            print(f"Saved to {task.report}")
+
+    tasks.configure(on_done=on_task_done)
     brain.on_learned = lambda text: print(f"\n🧠 Learned: {text} Say \"forget that\" to undo.")
     for warm_up in (voice.warm_up, senses.warm_up, mcp_client.load_all):
         threading.Thread(target=warm_up, daemon=True).start()

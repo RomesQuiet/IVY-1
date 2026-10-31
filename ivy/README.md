@@ -100,6 +100,13 @@ try to obey it. So once a request has read outside content, shell, Python, Apple
 messages and other powerful tools ask every time, whatever the settings above say. Clicks
 and typing are exempt so screen work isn't one dialog per click.
 
+## Background tasks
+
+Say "research standing desks in the background" and keep working. One task runs at a time,
+your own requests go first, and tasks can't use the screen, keyboard or sound. The result
+appears in the chat and in `~/Documents/Ivy Reports`. "what are you working on" or `/tasks` shows
+progress, "cancel the task" stops one. Quitting Ivy ends running tasks.
+
 ## Teaching Ivy
 
 Correct her ("no, I meant Safari", "from now on use metric") and she keeps lasting lessons

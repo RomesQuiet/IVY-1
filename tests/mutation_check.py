@@ -30,6 +30,8 @@ BUGS = [
     ("a bad colour stops the app opening", "ivy_gui.py", 'return colour if isinstance(colour, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", colour) else "#1c1c1e"', 'return colour or "#1c1c1e"'),
     ("text can't be selected", "ivy_gui.py", "text_select=True,", "text_select=False,"),
     ("instant commands ignore lessons", "ivy/intents.py", "if learning.applies(name, text):", "if False:"),
+    ("tasks can use the screen", "ivy/brain.py", 'self.denied = _NOT_IN_BACKGROUND if background else frozenset()', "self.denied = frozenset()"),
+    ("a page can start a clean task", "ivy/brain.py", 'if t.confirm == "task" and not guarded:', 'if t.confirm == "task":'),
     ("page function renamed", "ivy/ui/index.html", "window.toolDone =", "window.toolFinished ="),
 ]
 

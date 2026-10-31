@@ -14,7 +14,8 @@ from . import learning, toolkit
 from .tools import resolve_app
 
 _FILLER = re.compile(
-    r"^(?:(?:hey|ok|okay|hi)\s+)?(?:ivy[,!.]?\s+)?(?:(?:can|could|would|will) you\s+)?(?:please\s+)?"
+    r"^(?:(?:hey|ok|okay|hi)\s+)?(?:ivy[,!.]?\s+)?(?:(?:can|could|would|will) you\s+)?(?:please\s+)?",
+    re.I,
 )
 _SITES = {
     "youtube": "youtube.com", "gmail": "mail.google.com", "google": "google.com",
@@ -26,6 +27,13 @@ _SITES = {
     "google drive": "drive.google.com", "drive": "drive.google.com", "google docs": "docs.google.com",
 }
 _UNITS = {"s": 1 / 60, "sec": 1 / 60, "second": 1 / 60, "m": 1, "min": 1, "minute": 1, "h": 60, "hr": 60, "hour": 60}
+_BACKGROUND = re.compile(
+    r"in the background[,:]?\s+(.+)|(.+?)[,]?\s+in the background[.!]*"
+    r"|(?:start|run)\s+a\s+(?:background\s+)?task\s*(?:to|:)\s*(.+)", re.I | re.S)
+_TASK_STATUS = {"list tasks", "show tasks", "what are you working on", "how's the task going",
+                "how is the task going", "any tasks running", "what tasks are running"}
+_TASK_CANCEL = {"cancel the task", "stop the task", "cancel the background task",
+                "stop the background task", "cancel task"}
 _MUSIC_WORDS = re.compile(r"\b(songs?|music|album|playlist|track|radio|by|some)\b")
 
 
@@ -43,7 +51,19 @@ def _strip_video(q: str) -> str:
 
 def match(text: str) -> tuple[str, dict] | tuple[None, str] | None:
     """→ (tool_name, args) to run, (None, reply) for a direct answer, or None."""
+    # --- background tasks (before the length and comma limits: goals can be long) ---
+    raw = _FILLER.sub("", text.strip()).strip()
+    m = _BACKGROUND.fullmatch(raw)
+    if m:
+        goal = (m.group(1) or m.group(2) or m.group(3)).strip(" ,:.")
+        if len(goal.split()) >= 2:
+            return "start_task", {"goal": goal}
+
     t = _clean(text)
+    if t in _TASK_STATUS:
+        return "list_tasks", {}
+    if t in _TASK_CANCEL:
+        return "cancel_task", {}
     if not t or len(t) > 120 or re.search(r"\b(and then|then|and also|after that)\b|,", t):
         return None
 

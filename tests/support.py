@@ -50,6 +50,7 @@ def install():
     from ivy import config, memory, senses
     config.MUTED = True
     config.ROOT = temp                      # caches and settings land here too
+    config.REPORTS_DIR = temp / "reports"
     memory._store = memory.MemoryStore(temp / "memory.json")
 
     def no_volume(_level):

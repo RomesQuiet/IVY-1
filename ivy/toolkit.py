@@ -31,6 +31,7 @@ class Tool:
     group: str             # only "core" tools are always sent; others load on demand
     confirm: str | None    # None = safe, "action" = ACTION_MODE, "shell" = CONFIRM_SHELL,
                            # "vision" = uploads a screenshot, needs CLOUD_VISION consent
+                           # "task" = free, unless outside content may have prompted it
     ack: str | None        # short phrase spoken in voice mode before a slow tool runs
     timeout: float
     untrusted: bool = False   # returns outside content (web, screen, mail): data, not orders
@@ -67,6 +68,8 @@ GROUPS = {
                  "type, press keys, scroll, browser JavaScript",
                  r"\b(click|press|type|scroll|button|window|automate|safari|chrome|tab|javascript|"
                  r"keyboard|shortcut|minimi|maximi|fill|form|screen|menu|dialog|wait for)\b"),
+    "tasks":    ("list or cancel background tasks",
+                 r"\b(background|tasks?|working on|still running)\b"),
     "skills":   ("learn a new permanent ability (write a skill), list or remove skills",
                  r"\b(skill|learn|teach|new ability|from now on you can|build (a|an) tool|"
                  r"(tell|alert|notify|warn|let) me (know )?(when|if)|keep an eye|watch for|monitor)\b"),
@@ -135,6 +138,7 @@ _VERBS = {
     "click_text": "🖱 Clicking", "wait_for_text": "⏳ Waiting for", "type_text": "⌨️ Typing",
     "press_key": "⌨️ Key", "read_file": "📄 Reading", "write_file": "📝 Writing", "edit_file": "📝 Editing",
     "find_files": "🔎 Finding files", "search_in_files": "🔎 Searching files",
+    "start_task": "⏳ Background task", "list_tasks": "⏳ Tasks", "cancel_task": "⏳ Cancelling task",
     "read_context": "👁 Reading what's in front", "reply_email": "✉️ Reply",
     "install_package": "📦 Installing", "uninstall_package": "📦 Uninstalling", "use_tools": "🧰 Unlocking",
 }

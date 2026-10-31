@@ -187,7 +187,8 @@ class IvyApp:
     def open_latest(self):
         """Show Ivy, restarting first if her code has changed. A running Ivy keeps the code
         it started with, and opening the app only wakes it, so nothing else ever updates her."""
-        if code_stamp() > LOADED_CODE and not self._chat_lock.locked():
+        from ivy import tasks
+        if code_stamp() > LOADED_CODE and not self._chat_lock.locked() and not tasks.active():
             print("🔄 New code found — restarting")
             self.restart()
         else:
@@ -257,6 +258,21 @@ class IvyApp:
     # Proactive alerts
     # -----------------------------------------------------------------
 
+    def _on_task_done(self, task):
+        from ivy import tools, watcher
+        done = task.status == "done"
+        short = task.goal[:70]
+        self._js(f"window.showTaskResult({json.dumps(short)}, {json.dumps(done)}, "
+                 f"{json.dumps(task.result)}, {json.dumps(str(task.report or ''))})")
+        message = f"Your background task is finished: {short}." if done else f"Your background task failed: {short}."
+        try:
+            tools.notify("Ivy", message)
+        except Exception:
+            pass
+        self.brain.add_note(f"(Background task {task.id}, \"{short}\", ended: {task.result[:1500]})")
+        if not self._chat_lock.locked() and not watcher.in_quiet_hours():
+            voice.speak_async(message)
+
     def _on_alert(self, text: str):
         from ivy import tools, watcher
         print(f"🔔 {text}")
@@ -281,10 +297,11 @@ class IvyApp:
         global voice
         t0 = time.time()
         try:
-            from ivy import voice as _voice
+            from ivy import tasks, voice as _voice
             from ivy.brain import Brain
             voice = _voice
             self.brain = Brain(confirm=self._confirm)
+            tasks.configure(confirm=self._confirm, on_done=self._on_task_done)
             self.brain.on_learned = lambda text: self._js(f"window.showLearned({json.dumps(text)})")
         except Exception as e:
             print(f"[startup error] {e}")
@@ -406,6 +423,9 @@ class IvyApp:
             if config.MUTED:
                 voice.stop_speaking()
             print(f"Voice {'muted' if config.MUTED else 'unmuted'}")
+        elif cmd == "/tasks":
+            from ivy import toolkit
+            print(toolkit.run("list_tasks", {}))
         elif cmd == "/settings":
             self._js("window.openSettings()")
         elif cmd == "/doctor":
@@ -425,6 +445,7 @@ class IvyApp:
                 "/memories     — list long-term memories",
                 "/model <name> — force a model, or 'auto'",
                 "/mute         — toggle voice output",
+                "/tasks        — background tasks",
                 "/settings     — colours and themes",
                 "/doctor       — what Ivy can see and do right now",
                 "/quit         — close IVY-1",

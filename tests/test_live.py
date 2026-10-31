@@ -82,6 +82,17 @@ class RealRequests(unittest.TestCase):
         self.assertIsNone(learning.study("that's wrong, try again", "what's 2+2", "calculate"))
         get_store().clear()
 
+    def test_real_background_research(self):
+        import time
+        from ivy import tasks
+        task = tasks.start("Find out who won the most recent Formula 1 race and which two drivers lead "
+                           "the championship. Write a short report.")
+        end = time.time() + 240
+        while task.status in ("queued", "running") and time.time() < end:
+            time.sleep(1)
+        self.assertEqual(task.status, "done", task.result)
+        self.assertTrue(task.report.read_text().count("\n") > 2)
+
     def test_fixes_a_bug_in_a_file(self):
         with tempfile.TemporaryDirectory() as d:
             f = Path(d) / "stats.py"

@@ -459,6 +459,12 @@ window.setWakeUI = function(on) {
 };
 
 window.showAlert = (text) => { addMsg('note', '🔔 ' + text); };
+window.showTaskResult = (goal, done, result, report) => {
+  clearTyping();
+  addMsg('note', (done ? '✅ Background task finished: ' : '⚠️ Background task failed: ') + goal);
+  addMsg('assistant', result);
+  if (report) addMsg('system', 'Saved to ' + report);
+};
 window.showLearned = (text) => { addMsg('system', `🧠 Learned: ${text} Say "forget that" to undo.`); };
 
 // Her code changed on disk while this window was open.
