@@ -56,6 +56,7 @@ _NOT_IN_BACKGROUND = _UI_TOOLS | {
     "play_music", "media_control", "set_volume", "system_toggle", "power", "read_screen",
     "see_screen", "wait_for_text", "run_js_browser", "list_ui_elements",
     "browser_open", "browser_read"}
+_YES = re.compile(r"^\W*(yes|yep|yeah|sure|ok|okay|go ahead|do it|confirm(ed)?|correct|sim|please do|those|all of them)\b", re.I)
 _RISK_CHECKS = {"browser_click": browser.click_risk, "run_shell": safety.shell_risk,
                 "launch_program": safety.shell_risk, "run_python": safety.python_risk,
                 "applescript": safety.applescript_risk}
@@ -294,6 +295,8 @@ class Brain:
         title = f"Ivy wants to: {toolkit.describe_call(t.name, args)}"
         if risk:
             title = f"Check this first: {risk}"
+        elif t.confirm == "always":
+            title += "  (this can't be undone easily)"
         elif guarded:
             title += "  (she has read outside content in this request — check this is what you want)"
         elif session:
@@ -302,6 +305,20 @@ class Brain:
         if ok and session:
             self.actions_approved = True
         return ok
+
+    def _named_by_romeu(self, target: str) -> bool:
+        """Did Romeu name this, or say yes to a list that contained it? The model can't be
+        trusted to choose what to remove: told to list first, it still went for everything."""
+        said = [m for m in self.messages if m.get("role") in ("user", "assistant") and m.get("content")]
+        wanted = re.sub(r"\.app$", "", target.lower()).strip()
+        last_user = next((i for i in range(len(said) - 1, -1, -1) if said[i]["role"] == "user"), None)
+        if last_user is None or not wanted:
+            return False
+        request = said[last_user]["content"].partition(context.MARKER)[0].lower()
+        if wanted in request:
+            return True
+        offered = said[last_user - 1]["content"].lower() if last_user else ""
+        return bool(_YES.match(request)) and wanted in offered
 
     def _run_tool(self, name: str, args: dict) -> str:
         t = toolkit.TOOLS.get(name)
@@ -652,6 +669,10 @@ class Brain:
                                     if added else f"No such group. Valid: {', '.join(toolkit.GROUPS)}.")
                 continue
 
+            if c["name"] == "uninstall_package" and not self._named_by_romeu(str(args.get("name", ""))):
+                results[c["id"]] = ("NOT DONE: Romeu didn't name this app. Don't remove anything yet: "
+                                    "reply with the exact list you'd remove and ask Romeu to confirm it.")
+                continue
             if c["name"] in self.denied:
                 results[c["id"]] = (f"{c['name']} isn't available in a background task: Romeu is "
                                     "using the Mac. Carry on without it.")

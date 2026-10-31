@@ -43,6 +43,7 @@ BUGS = [
     ("/Applications can be deleted with OK", "ivy/tools.py", "refused = safety.forbidden(command)\n    if refused:\n        return refused\n    r = _sh", "r = _sh"),
     ("Ivy can uninstall herself", "ivy/tools.py", 'if name.lower().removesuffix(".app") in _NEVER_UNINSTALL:', "if False:"),
     ("scripts dodge the allowlist", "ivy/safety.py", 'return python_risk(text) or ("it would delete apps" if forbidden_python(text) else None)', "return None"),
+    ("unnamed apps can be uninstalled", "ivy/brain.py", 'if c["name"] == "uninstall_package" and not self._named_by_romeu(str(args.get("name", ""))):', "if False:"),
     ("page function renamed", "ivy/ui/index.html", "window.toolDone =", "window.toolFinished ="),
 ]
 

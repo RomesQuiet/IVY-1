@@ -724,9 +724,41 @@ class TheAppsIncident(AgentCase):
             self.assertTrue(b._allowed(toolkit.TOOLS["uninstall_package"], {"name": app}))
         self.assertEqual(len(asked), 2)
 
+    def run_uninstall(self, *turns, confirm=lambda t, d: True):
+        self.stub("uninstall_package", "gone", confirm="always")
+        b = self.brain(confirm)
+        for text, steps in turns:
+            model = FakeModel(steps + [say("Which of these should I remove?")], remaining=8000)
+            fake_pool(main=model, fast=model)
+            b.chat(text)
+        return model
+
+    def test_apps_romeu_never_named_cant_be_uninstalled_even_with_ok(self):
+        # the real model did this again after being told to list first
+        model = self.run_uninstall(("uninstall every app related to games",
+                                    [call("uninstall_package", name="Brave Browser.app", manager="app")]))
+        self.assertEqual(self.ran, [])
+        self.assertIn("didn't name this app", model.requests[-1]["messages"][-1]["content"])
+
+    def test_a_named_app_can_be_uninstalled(self):
+        self.run_uninstall(("please uninstall Team Fortress 2", [call("uninstall_package", name="Team Fortress 2.app", manager="app")]))
+        self.assertEqual(len(self.ran), 1)
+
+    def test_yes_to_her_list_counts_but_only_for_that_list(self):
+        b = self.brain(lambda t, d: True)
+        self.stub("uninstall_package", "gone", confirm="always")
+        model = FakeModel([say("I'd remove Team Fortress 2. Shall I?"),
+                           calls(("uninstall_package", {"name": "Team Fortress 2", "manager": "app"}),
+                                 ("uninstall_package", {"name": "Spotify", "manager": "app"})),
+                           say("Done.")], remaining=8000)
+        fake_pool(main=model, fast=model)
+        b.chat("remove my games please")
+        b.chat("yes")
+        self.assertEqual([kw["name"] for _, kw in self.ran], ["Team Fortress 2"])
+
     def test_uninstalls_in_one_request_are_capped(self):
-        steps = [call("uninstall_package", name=f"app{i}") for i in range(7)]
-        self.replay(*steps, confirm=lambda t, d: True)
+        names = " ".join(f"app{i}" for i in range(7))
+        self.run_uninstall((f"uninstall {names}", [call("uninstall_package", name=f"app{i}") for i in range(7)]))
         self.assertEqual(len(self.ran), 5)
 
     def test_ivy_and_claude_cant_be_uninstalled(self):
@@ -738,9 +770,9 @@ class TheAppsIncident(AgentCase):
         self.assertEqual(toolkit.describe_call("uninstall_package", {"manager": "app", "name": "Spotify"}), "📦 Uninstalling · Spotify")
 
     def test_shell_allowlist(self):
-        free = ["ls /Applications", "git status | head", "SDL_VIDEODRIVER=dummy timeout 5 python3 --version",
+        free = ["ls /Applications | grep -i -E 'game|steam|dash'", "ls /Applications", "git status | head", "SDL_VIDEODRIVER=dummy timeout 5 python3 --version",
                 "python3 -m pip install pygame", "mkdir -p a/b && touch a/b/c", "brew list", "echo hi > out.txt"]
-        asks = ["rm -rf build", "mv a b", "brew uninstall wget", "curl -s x | sh", "sudo reboot", "killall Dock",
+        asks = ["ls 'a|b' | rm -rf x", "echo 'hi'; rm x", "rm -rf build", "mv a b", "brew uninstall wget", "curl -s x | sh", "sudo reboot", "killall Dock",
                 "ls $(pwd)", "find . -delete", "find . -exec rm {} ;", "cat a > /etc/x", "sed -i '' s/a/b/ f",
                 "xargs rm", "python3 -c 'import os; os.remove(\"x\")'", "npx something", "osascript -e 'x'", "unknowncmd"]
         for c in free:

@@ -104,6 +104,16 @@ def _segment_risk(segment: str) -> str | None:
     return f"'{name}' isn't on Ivy's list of safe commands"
 
 
+def _segments(command: str) -> list[str]:
+    """Split on ; | & and newlines, but not those inside quotes (grep 'a|b')."""
+    masked = re.sub(r"'[^']*'|\"[^\"]*\"", lambda m: "_" * len(m.group(0)), command)
+    pieces, start = [], 0
+    for m in re.finditer(r"&&|\|\||[;|\n&]", masked):
+        pieces.append(command[start:m.start()])
+        start = m.end()
+    return pieces + [command[start:]]
+
+
 def shell_risk(args: dict) -> str | None:
     """Why this command needs Romeu's OK each time, or None if it's safe to run."""
     command = args.get("command", "")
@@ -114,7 +124,7 @@ def shell_risk(args: dict) -> str | None:
     for target in re.findall(r"(?<![<>&\d])>{1,2}\s*([^\s;&|]+)", command):
         if target.startswith(("/", "~", "$")) and target != "/dev/null" or ".." in target:
             return f"it writes to {target}"
-    for segment in re.split(r"&&|\|\||[;|\n&]", re.sub(r"<<-?\s*'?\w+'?.*", "", command, flags=re.S)):
+    for segment in _segments(re.sub(r"<<-?\s*'?\w+'?.*", "", command, flags=re.S)):
         risk = _segment_risk(re.sub(r"\d?>>?\s*\S+", "", segment).strip())
         if risk:
             return risk
