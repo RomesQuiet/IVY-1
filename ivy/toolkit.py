@@ -13,9 +13,12 @@ function and its schema can never drift apart.
 
 import inspect
 import re
+import time
 import typing
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as _Timeout
 from dataclasses import dataclass
+
+from . import actionlog, config
 
 MAX_RESULT_CHARS = 4000
 
@@ -219,6 +222,15 @@ def _clean_args(t: Tool, args: dict) -> tuple[dict, str | None]:
 
 
 _pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="tool")
+_STARTED = time.time()
+
+
+def out_of_date() -> bool:
+    """Has the app been rebuilt since this copy started? It would still run the old code."""
+    try:
+        return config.INSTALLED_APP.stat().st_mtime > _STARTED
+    except OSError:
+        return False
 
 
 def run(name: str, args: dict) -> str:
@@ -229,14 +241,23 @@ def run(name: str, args: dict) -> str:
     clean, err = _clean_args(t, args)
     if err:
         return err
+    if t.confirm in ("shell", "always") and out_of_date():
+        actionlog.record("refused", name, args=clean, why="out of date")
+        return "NOT DONE: Ivy was updated and this copy is out of date. Tell Romeu to quit and reopen her."
+    began = time.monotonic()
     future = _pool.submit(t.fn, **clean)
     try:
         result = future.result(timeout=t.timeout)
     except _Timeout:
-        return f"{name} is still running after {int(t.timeout)}s — gave up waiting."
+        text = f"{name} is still running after {int(t.timeout)}s — gave up waiting."
+        actionlog.record("tool", name, args=clean, ms=round((time.monotonic() - began) * 1000), result=text)
+        return text
     except Exception as e:
-        return f"{name} failed: {type(e).__name__}: {e}"
+        text = f"{name} failed: {type(e).__name__}: {e}"
+        actionlog.record("tool", name, args=clean, ms=round((time.monotonic() - began) * 1000), result=text)
+        return text
     text = "(done)" if result is None else str(result)
+    actionlog.record("tool", name, args=clean, ms=round((time.monotonic() - began) * 1000), result=text[:300])
     if len(text) > MAX_RESULT_CHARS:
         text = text[:MAX_RESULT_CHARS] + f"\n…(truncated, {len(text)} chars total)"
     return text

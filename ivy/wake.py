@@ -13,7 +13,13 @@ from pathlib import Path
 from . import audio, config
 
 import numpy as np
-import sounddevice as sd
+
+
+def _sd():
+    import sounddevice      # takes about 7 s to load, and only voice needs it
+    return sounddevice
+
+
 
 SAMPLE_RATE = 16000
 FRAME_SIZE = 1280  # 80 ms at 16 kHz
@@ -94,7 +100,7 @@ class WakeListener:
         warned_silent = False
 
         try:
-            with sd.InputStream(
+            with _sd().InputStream(
                 samplerate=SAMPLE_RATE,
                 channels=1,
                 dtype="int16",

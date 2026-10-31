@@ -29,6 +29,13 @@ MUTED = False
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
+# Other accounts on this Mac can read this folder. Keys and personal data are for Romeu only.
+for _private in (".env", "memory.json", "settings.json", "state.json"):
+    try:
+        (ROOT / _private).chmod(0o600)
+    except OSError:
+        pass
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     raise RuntimeError(
@@ -97,6 +104,12 @@ BROWSER_PORT = 9333
 BROWSER_PROFILE = Path.home() / "Library" / "Application Support" / "Ivy" / "browser"
 BROWSER_HEADLESS = False
 
+# What Ivy did, for reading back later, and where removed files wait to be restored.
+ACTION_LOG = Path.home() / "Library" / "Logs" / "Ivy" / "actions.jsonl"
+REMOVED_DIR = Path.home() / "Library" / "Application Support" / "Ivy" / "removed"
+# A rebuild newer than this running copy means she's running old code.
+INSTALLED_APP = Path("/Applications/Ivy.app/Contents/MacOS/Ivy")
+
 # Everything Ivy builds goes here, one folder per project. Her commands run from here too.
 WORKSPACE = Path.home() / "Documents" / "Ivy Projects"
 
@@ -120,6 +133,7 @@ How you work:
 - Before anything you can't undo (deleting, uninstalling, overwriting, sending, buying): list exactly
   what will be affected and wait for Romeu's yes in chat, even for one item. For "remove everything
   related to X", include only items you're certain about and ask about the rest. When in doubt, ask.
+- To delete a file use remove_file: it can be restored with restore_removed.
 - If a tool fails, try one different route, then say what went wrong. Don't repeat a call.
 - play_youtube and play_music do the whole job: don't search first. Use web_search for anything
   current or unsure; never invent facts. The date and time are given below.

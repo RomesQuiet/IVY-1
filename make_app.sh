@@ -64,6 +64,11 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 pkill -9 -x -u "$USER" Ivy 2>/dev/null || true
 
+# pkill can't reach another account's copy, and that copy keeps running the old code.
+for pid in $(pgrep -x Ivy); do
+    echo "⚠️  Ivy is still running in account $(ps -o user= -p "$pid"). Stop it with: sudo kill $pid"
+done
+
 # ============================================================
 # CLEAN OLD BUNDLES
 # ============================================================

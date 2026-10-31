@@ -255,13 +255,13 @@ class Wake(unittest.TestCase):
                     return np.zeros((n, 1), np.int16), False
                 return frame.reshape(-1, 1), False
 
-        saved = wake.sd.InputStream
-        wake.sd.InputStream = lambda **kw: Stream()
+        saved = wake._sd().InputStream
+        wake._sd().InputStream = lambda **kw: Stream()
         try:
             # below the ~0.73 silence scores, so this tests the guard, not the current threshold
             return wake.WakeListener(config.WAKE_WORD, 0.5).wait_for_wake()
         finally:
-            wake.sd.InputStream = saved
+            wake._sd().InputStream = saved
 
     def test_digital_silence_never_wakes(self):
         # the model scores all-zero audio ~0.73, which is what a denied mic delivers

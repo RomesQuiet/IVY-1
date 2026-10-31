@@ -3,6 +3,7 @@
 import threading
 import time
 import unittest
+from pathlib import Path
 
 from tests.support import api_error, call, calls, fake_pool, FakeModel, ROOT, say, stream_error
 from ivy import config, context, intents, learning, safety, senses, tasks, toolkit
@@ -685,6 +686,77 @@ class FailuresFromRealUse(AgentCase):
     def test_commands_start_in_the_workspace(self):
         from ivy import tools
         self.assertEqual(tools.resolve_path("g/a.py"), config.WORKSPACE / "g/a.py")
+
+
+class Recovery(AgentCase):
+    """Whatever slips past the checks has to be recoverable and on the record."""
+
+    def fn(self, name):
+        return toolkit.TOOLS[name].fn
+
+    def test_removed_file_comes_back_where_it_was(self):
+        folder = Path(config.WORKSPACE) / "game"
+        folder.mkdir(parents=True)
+        (folder / "main.py").write_text("x")
+        self.fn("remove_file")(path=str(folder))
+        self.assertFalse(folder.exists())
+        self.assertIn("game", self.fn("restore_removed")())
+        self.fn("restore_removed")(name="game")
+        self.assertEqual((folder / "main.py").read_text(), "x")
+
+    def test_restore_never_overwrites(self):
+        target = Path(config.WORKSPACE) / "a.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("old")
+        self.fn("remove_file")(path=str(target))
+        target.write_text("new")
+        self.assertIn("NOT DONE", self.fn("restore_removed")(name="a.txt"))
+        self.assertEqual(target.read_text(), "new")
+
+    def test_remove_refuses_broad_targets(self):
+        for path in ("/Applications/Spotify.app", "~", "~/Documents"):
+            self.assertIn("NOT DONE", self.fn("remove_file")(path=path))
+
+    def test_shell_cant_delete_even_with_ok(self):
+        for command in ("rm -rf build", "cd x && rm y", "rmdir z"):
+            self.assertIn("remove_file", self.fn("run_shell")(command=command))
+
+    def test_actions_are_logged_without_secrets(self):
+        self.stub("calculate", "4")
+        toolkit.run("calculate", {"expression": "api_key=gsk_abcdefghijkl"})
+        log = Path(config.ACTION_LOG).read_text()
+        self.assertIn('"name": "calculate"', log)
+        self.assertNotIn("gsk_abcdefghijkl", log)
+
+    def test_out_of_date_copy_refuses_powerful_tools(self):
+        self.stub("run_shell", "ran", confirm="shell")
+        toolkit._STARTED, saved = 0, toolkit._STARTED
+        stamp = Path(config.ACTION_LOG).with_name("stamp")
+        stamp.write_text("")
+        config.INSTALLED_APP, app = stamp, config.INSTALLED_APP
+        try:
+            self.assertIn("out of date", toolkit.run("run_shell", {"command": "ls"}))
+        finally:
+            toolkit._STARTED, config.INSTALLED_APP = saved, app
+
+
+class TheAppsIncidentReplays(AgentCase):
+    """Variants of the incident, through the real checks with OK refused and clicked."""
+
+    ATTACKS = ['ls /Applications | xargs -I{} rm -rf "/Applications/{}"', "find /Applications -name '*.app' -delete",
+               "cd /Applications; rm -rf *", "A=/Applications; rm -rf $A/*", "mv /Applications/Brave\\ Browser.app /tmp/",
+               "sudo rm -rf /Applications/Steam.app", "zsh -c 'rm -rf /Applications/x.app'",
+               "osascript -e 'tell application \"Finder\" to delete POSIX file \"/Applications/x.app\"'"]
+
+    def test_none_run_without_asking(self):
+        config.CONFIRM_SHELL = False
+        for attack in self.ATTACKS:
+            self.assertTrue(safety.shell_risk({"command": attack}), attack)
+
+    def test_none_run_even_if_ok_is_clicked(self):
+        real = toolkit.TOOLS["run_shell"].fn
+        for attack in self.ATTACKS:
+            self.assertIn("NOT DONE", real(command=attack), attack)
 
 
 class TheAppsIncident(AgentCase):

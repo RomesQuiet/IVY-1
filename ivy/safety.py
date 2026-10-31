@@ -42,6 +42,13 @@ _APPLESCRIPT_RISK = re.compile(r"\b(delete|erase|empty|move|duplicate|do shell s
                                r"log out|set volume|make new)\b", re.I)
 
 
+_DELETERS = re.compile(r"(^|[;&|(\s/])(rm|rmdir|unlink|shred|srm)(\s|$)")
+
+
+def deletes(command: str) -> bool:
+    return bool(_DELETERS.search(command))
+
+
 def forbidden(command: str) -> str | None:
     """A reason this must not run at all, even with Romeu's OK."""
     if _FORBIDDEN.search(command):

@@ -53,6 +53,9 @@ def install():
     config.ROOT = temp                      # caches and settings land here too
     config.REPORTS_DIR = temp / "reports"
     config.WORKSPACE = temp / "projects"
+    config.ACTION_LOG = temp / "actions.jsonl"
+    config.REMOVED_DIR = temp / "removed"
+    config.INSTALLED_APP = temp / "no-such-app"
     config.BROWSER_PROFILE = temp / "browser"
     config.BROWSER_HEADLESS = True          # never a window, never the real profile
     config.BROWSER_PORT = 9347

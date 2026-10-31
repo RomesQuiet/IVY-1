@@ -44,6 +44,10 @@ BUGS = [
     ("Ivy can uninstall herself", "ivy/tools.py", 'if name.lower().removesuffix(".app") in _NEVER_UNINSTALL:', "if False:"),
     ("scripts dodge the allowlist", "ivy/safety.py", 'return python_risk(text) or ("it would delete apps" if forbidden_python(text) else None)', "return None"),
     ("unnamed apps can be uninstalled", "ivy/brain.py", 'if c["name"] == "uninstall_package" and not self._named_by_romeu(str(args.get("name", ""))):', "if False:"),
+    ("the shell can delete", "ivy/tools.py", "if safety.deletes(command):", "if False:"),
+    ("restore overwrites", "ivy/tools.py", "if home.exists():", "if False:"),
+    ("secrets reach the log", "ivy/actionlog.py", 'line = _redact(json.dumps(entry, ensure_ascii=False, default=str))', 'line = json.dumps(entry, ensure_ascii=False, default=str)'),
+    ("old copies keep acting", "ivy/toolkit.py", 'if t.confirm in ("shell", "always") and out_of_date():', "if False:"),
     ("page function renamed", "ivy/ui/index.html", "window.toolDone =", "window.toolFinished ="),
 ]
 

@@ -6,10 +6,12 @@ import html
 import math
 import operator
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
@@ -456,6 +458,8 @@ def run_shell(command: str) -> str:
     refused = safety.forbidden(command)
     if refused:
         return refused
+    if safety.deletes(command):
+        return "NOT DONE: run_shell doesn't delete. Use remove_file, which can be undone."
     r = _sh(["/bin/zsh", "-lc", command], timeout=55, cwd=str(workspace()))
     out = ((r.stdout or "") + (r.stderr or "")).strip() or "(no output)"
     return out if r.returncode == 0 else f"exit {r.returncode}\n{out}"
@@ -477,6 +481,48 @@ def run_python(code: str) -> str:
         Path(f.name).unlink(missing_ok=True)
     out = ((r.stdout or "") + (r.stderr or "")).strip() or "(no output)"
     return out if r.returncode == 0 else f"exit {r.returncode}\n{out}"
+
+
+def _hold(path: Path) -> Path:
+    """Move something to the holding folder instead of deleting it."""
+    folder = Path(config.REMOVED_DIR) / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    folder.mkdir(parents=True)
+    (folder / "from.txt").write_text(str(path))
+    held = folder / path.name
+    shutil.move(str(path), str(held))
+    return held
+
+
+@tool(group="files", confirm="always", timeout=120, path="File or folder to remove")
+def remove_file(path: str) -> str:
+    """Remove a file or folder. It's kept so restore_removed can bring it back."""
+    target = resolve_path(path)
+    refused = safety.forbidden(f"rm {target}")
+    if refused or target == Path.home() or target.parent == Path.home():
+        return refused or f"NOT DONE: {target} is too broad to remove."
+    if not target.exists():
+        return f"{target} not found."
+    _hold(target)
+    return f"Removed {target.name}. It can be restored."
+
+
+@tool(group="files", timeout=120, name="Name of the removed item; empty lists them")
+def restore_removed(name: str = "") -> str:
+    """List what Ivy removed, or put one item back where it was."""
+    held = sorted(p for p in Path(config.REMOVED_DIR).glob("*/*") if p.name != "from.txt") if Path(config.REMOVED_DIR).exists() else []
+    if not name:
+        return "\n".join(f"{p.name} (removed {p.parent.name[:8]})" for p in held) or "Nothing to restore."
+    match = [p for p in held if p.name.lower().removesuffix(".app") == name.lower().removesuffix(".app")]
+    if not match:
+        return f"{name} isn't in the removed items."
+    item = match[-1]
+    home = Path((item.parent / "from.txt").read_text())
+    if home.exists():
+        return f"NOT DONE: something already exists at {home}."
+    home.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(item), str(home))
+    shutil.rmtree(item.parent)
+    return f"Restored {home}."
 
 
 @tool(group="files", timeout=20, command="zsh command, e.g. 'python3 main.py'", folder="Folder to run it in")
@@ -601,9 +647,9 @@ _NEVER_UNINSTALL = {"ivy", "claude", "finder", "safari", "terminal", "python", "
 
 
 @tool(group="software", confirm="always", timeout=300,
-      manager="'app' moves a .app from /Applications to the Trash; others use that package manager")
+      manager="'app' removes a .app from /Applications, restorably; others use that package manager")
 def uninstall_package(name: str, manager: Manager = "brew") -> str:
-    """Uninstall ONE app or package; Romeu confirms each one. Apps go to the Trash."""
+    """Uninstall ONE app or package; Romeu confirms each one. Removed apps can be restored."""
     name = name.strip()
     if name.lower().removesuffix(".app") in _NEVER_UNINSTALL:
         return f"NOT DONE: {name} is protected. Romeu can remove it in Finder."
@@ -611,8 +657,8 @@ def uninstall_package(name: str, manager: Manager = "brew") -> str:
         app = name if name.endswith(".app") else name + ".app"
         for d in (Path("/Applications"), Path.home() / "Applications"):
             if (d / app).exists():
-                _osa(f'tell application "Finder" to delete POSIX file {_as_str(str(d / app))}', timeout=30)
-                return f"Moved {app} to the Trash."
+                _hold(d / app)
+                return f"Removed {app}. restore_removed can bring it back."
         return f"{app} not found."
     cmds = {
         "brew": [["brew", "uninstall", name], ["brew", "uninstall", "--cask", name]],

@@ -10,11 +10,16 @@ import wave
 from pathlib import Path
 
 import numpy as np
-import sounddevice as sd
 import webrtcvad
 from openai import OpenAI
 
 from . import config
+
+
+def _sd():
+    import sounddevice      # takes about 7 s to load, and only voice needs it
+    return sounddevice
+
 
 _client = OpenAI(base_url=config.GROQ_BASE_URL, api_key=config.GROQ_API_KEY)
 
@@ -118,7 +123,7 @@ def record_until_silence(
         print("(mic busy — try again)")
         return ""
     try:
-        with sd.InputStream(
+        with _sd().InputStream(
             samplerate=SAMPLE_RATE, channels=1, dtype="int16"
         ) as stream:
 
@@ -376,7 +381,7 @@ def monitor_for_bargein(
     time.sleep(grace_sec)
 
     try:
-        with sd.InputStream(
+        with _sd().InputStream(
             samplerate=SAMPLE_RATE,
             channels=1,
             dtype="int16",
