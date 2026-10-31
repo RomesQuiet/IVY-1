@@ -622,6 +622,7 @@ def main():
         height=680,
         min_size=(640, 500),
         background_color=window_colour(),
+        text_select=True,      # pywebview blocks selecting and copying text by default
         confirm_close=False,
     )
     app.window = window
