@@ -49,6 +49,9 @@ BUGS = [
     ("secrets reach the log", "ivy/actionlog.py", 'line = _redact(json.dumps(entry, ensure_ascii=False, default=str))', 'line = json.dumps(entry, ensure_ascii=False, default=str)'),
     ("old copies keep acting", "ivy/toolkit.py", 'if t.confirm in ("shell", "always") and out_of_date():', "if False:"),
     ("Ivy guesses about herself", "ivy/brain.py", "instant = self._about_me(user_input) or intents.run(user_input)", "instant = intents.run(user_input)"),
+    ("backup thinking is shown", "ivy/brain.py", 'held = e.tier == "backup"', "held = False"),
+    ("the model can't switch", "ivy/brain.py", 'if name == "switch_model":', "if False:"),
+    ("file patterns search as words", "ivy/tools.py", 'if "*" in query or "?" in query:', "if False:"),
     ("page function renamed", "ivy/ui/index.html", "window.toolDone =", "window.toolFinished ="),
 ]
 

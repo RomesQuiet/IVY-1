@@ -500,6 +500,12 @@ def my_status() -> str:
     return get_pool().report()
 
 
+@tool(choice="The model to use from now on")
+def switch_model(choice: Literal["lightest", "heaviest", "automatic"]) -> str:
+    """Change which model Ivy uses. Saying it changed does nothing: only this tool does."""
+    return "Only available in a conversation."
+
+
 @tool(group="files", confirm="always", timeout=120, path="File or folder to remove")
 def remove_file(path: str) -> str:
     """Remove a file or folder. It's kept so restore_removed can bring it back."""
@@ -598,12 +604,17 @@ def edit_file(path: str, old: str, new: str) -> str:
     return f"Edited {p}."
 
 
+_NOISE = re.compile(r"/(\.venv|node_modules|__pycache__|\.git|site-packages)/")
+
+
 @tool(group="files", timeout=25, query="File name or words inside files (Spotlight)",
       folder="Limit the search to this folder")
 def find_files(query: str, folder: str = "") -> str:
     """Find files anywhere on this Mac by name or content using Spotlight."""
+    if "*" in query or "?" in query:    # a plain mdfind treats a pattern as words to look for
+        query = 'kMDItemFSName == "%s"' % query.replace('"', "")
     cmd = ["mdfind", query] + (["-onlyin", str(Path(folder).expanduser())] if folder else [])
-    hits = _sh(cmd, timeout=20).stdout.strip().splitlines()
+    hits = [h for h in _sh(cmd, timeout=20).stdout.strip().splitlines() if not _NOISE.search(h)]
     return "\n".join(hits[:40]) + (f"\n…({len(hits)} total)" if len(hits) > 40 else "") if hits else "No files found."
 
 

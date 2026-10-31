@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from tests.support import api_error, call, calls, fake_pool, FakeModel, ROOT, say, stream_error
 from ivy import config, context, intents, learning, safety, senses, tasks, toolkit
@@ -714,12 +715,54 @@ class KnowsHerself(AgentCase):
         brain.chat("use automatic")
         self.assertIsNone(brain.force_model)
 
+    def test_wordings_from_real_use_switch(self):
+        for text, want in (("switch to your lightest model please", "fast"), ("use the lightest one for now", "fast"), ("go to a heavier model", "main"),
+                           ("change to the heavy model", "main"), ("switch to the lightest", "fast")):
+            self.assertEqual(intents.about_ivy(text), want, text)
+        for text in ("use light mode", "set the theme to light", "use the fastest route"):
+            self.assertIsNone(intents.about_ivy(text), text)
+
+    def test_the_model_can_really_switch(self):
+        model = FakeModel([call("switch_model", choice="lightest"), say("Done.")])
+        fake_pool(main=model, fast=model)
+        brain = self.brain()
+        brain.chat("I'd rather you were cheaper for a while")
+        self.assertEqual(brain.force_model, "fake/fast")
+        self.assertIn('"switch_model"', Path(config.ACTION_LOG).read_text())
+
+    def test_backup_thinking_never_shows(self):
+        shown = []
+        pool = fake_pool(backup=FakeModel([say("Let me think about it.</think>\n\nIt's 4.")]))
+        self.assertEqual(self.brain().chat("explain two plus two", on_token=shown.append), "It's 4.")
+        self.assertEqual(shown, ["It's 4."])
+        self.assertEqual(pool.last, "backup")
+
+    def test_a_closed_think_block_goes_too(self):
+        from ivy.brain import _THINKING
+        self.assertEqual(_THINKING.sub("", "<think>hm</think>\nHi"), "Hi")
+
+    def test_the_request_and_whole_reply_time_are_logged(self):
+        self.ask("explain gravity", say("It pulls."))
+        log = Path(config.ACTION_LOG).read_text()
+        self.assertIn('"kind": "request"', log)
+        self.assertIn('"kind": "model"', log)
+
+    def test_file_patterns_search_by_name(self):
+        from ivy import tools
+        seen = []
+        real, tools._sh = tools._sh, lambda cmd, **kw: (seen.append(cmd), SimpleNamespace(stdout="/a/x.py\n/a/.venv/y.py\n"))[1]
+        try:
+            self.assertEqual(toolkit.TOOLS["find_files"].fn(query="*.py"), "/a/x.py")
+        finally:
+            tools._sh = real
+        self.assertEqual(seen[0][1], 'kMDItemFSName == "*.py"')
+
     def test_tokens_are_counted(self):
         pool = fake_pool(main=FakeModel([]))
         pool.record_usage(pool.endpoints[0], 500)
         pool.record_usage(pool.endpoints[0], 25)
         self.assertIn("main: 525", pool.report())
-        self.assertIn("Last answer came from main", pool.report())
+        self.assertIn("Most recent request went to main", pool.report())
 
     def test_ordinary_requests_arent_caught(self):
         for text in ("what's my disk usage", "what's your cpu usage", "use the fastest route", "what is a language model"):

@@ -237,12 +237,12 @@ class ModelPool:
         """The truth about Ivy's models, for her to read out instead of guessing."""
         names = {e.tier: e.name for e in self.endpoints}
         if self.forced:
-            mode = f"Romeu chose {self.forced.split('/')[-1]}, so it's used first."
+            mode = f"Romeu chose {self.forced.split('/')[-1]}, so it's used first unless it's out of budget."
         else:
             mode = (f"The router is on automatic: {names.get('fast', 'the fast model')} for simple requests, "
                     f"{names.get('main', 'the main model')} for the rest, {names.get('backup', 'none')} as backup.")
         used = ", ".join(f"{n}: {t}" for n, t in (self.used or {}).items()) or "none yet"
-        return (f"{mode} Last answer came from {self.last or 'no model yet'}. "
+        return (f"{mode} Most recent request went to {self.last or 'no model yet'}. "
                 f"Tokens since Ivy started: {used}. Available right now: {self.status()}. "
                 "Groq's daily totals aren't visible to Ivy; they're on console.groq.com. "
                 "Romeu can switch by saying 'use your lightest model', 'use your heaviest model' or "

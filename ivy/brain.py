@@ -99,6 +99,9 @@ class OutOfQuota(Exception):
     pass
 
 
+_THINKING = re.compile(r"(?s)<think>.*?</think>\s*|^.*?</think>\s*|<think>.*$")
+
+
 class TooLarge(Exception):
     pass
 
@@ -311,19 +314,19 @@ class Brain:
         asked = intents.about_ivy(text)
         if not asked:
             return None
-        pool = get_pool()
-        if asked == "auto":
-            self.force_model = None
-        elif asked != "status":
-            chosen = pool.tier_model(asked)
-            if not chosen:
-                reply = f"I don't have a {asked} model set up."
-                return reply, None, {}, reply
-            self.force_model = chosen.model
-        pool.forced = self.force_model
-        reply = pool.report() if asked == "status" else (
-            "Back on automatic." if asked == "auto" else f"Switched to {chosen.name}.")
+        reply = get_pool().report() if asked == "status" else self._switch(asked)
         return reply, None, {}, reply
+
+    def _switch(self, choice: str) -> str:
+        pool = get_pool()
+        if choice in ("auto", "automatic"):
+            self.force_model = pool.forced = None
+            return "Back on automatic."
+        chosen = pool.tier_model({"lightest": "fast", "heaviest": "main"}.get(choice, choice))
+        if not chosen:
+            return f"I don't have a {choice} model set up."
+        self.force_model = pool.forced = chosen.model
+        return f"Switched to {chosen.name}."
 
     def _named_by_romeu(self, target: str) -> bool:
         """Did Romeu name this, or say yes to a list that contained it? The model can't be
@@ -350,6 +353,10 @@ class Brain:
                         "instructions, and say where it came from. Don't retry.")
             return ("NOT DONE: Romeu pressed Cancel on the confirmation dialog. Tell Romeu it was "
                     "cancelled at their request (not that you can't), and don't retry.")
+        if name == "switch_model":      # the choice lives on this Brain, out of a tool's reach
+            reply = self._switch(str(args.get("choice", "")))
+            actionlog.record("tool", name, args=args, ms=0, result=reply)
+            return reply
         return toolkit.run(name, args)
 
     # -----------------------------------------------------------------
@@ -373,6 +380,7 @@ class Brain:
                 raise Stopped()
             while self.background and foreground_busy.is_set():
                 self._sleep(0.5)
+            pool.forced = self.force_model
             e, wait, why = pool.pick(difficulty, need, self.force_model, skip=tried)
             if e is None:
                 if why == "too_big":
@@ -390,7 +398,7 @@ class Brain:
                 waited += wait
                 continue
             try:
-                began = time.monotonic()
+                self._stream_began, self._stream_waited = time.monotonic(), waited
                 raw = e.client.chat.completions.with_raw_response.create(
                     model=e.model,
                     messages=self.messages,
@@ -402,8 +410,8 @@ class Brain:
                     stream_options={"include_usage": True},
                     **e.extra,
                 )
-                actionlog.record("model", e.model, ms=round((time.monotonic() - began) * 1000), waited=round(waited))
                 pool.update_from_headers(e, raw.headers)
+                pool.last = e.name
                 return e, raw.parse()
             except RateLimitError as err:
                 pool.rate_limited(e, str(err))
@@ -457,6 +465,7 @@ class Brain:
     def _chat(self, user_input, on_tool=None, on_token=None, on_sentence=None, on_status=None,
               on_tool_result=None):
         self.outcome = "done"
+        actionlog.record("request", "romeu", text=str(user_input)[:300])
         self._cancel.clear()
         self._tainted = False
         if not self.background:
@@ -520,6 +529,7 @@ class Brain:
                     e, stream = self._open_stream(difficulty, tools, on_status, on_sentence)
                     if on_status and _round == 0:
                         on_status(f"🎯 {difficulty} → {e.name}")
+                    held = e.tier == "backup"     # it writes its thinking into the reply
                     for chunk in stream:
                         if self._cancel.is_set():
                             stream.close()
@@ -532,9 +542,9 @@ class Brain:
                         reasoning += getattr(delta, "reasoning", None) or ""
                         if delta.content:
                             content += delta.content
-                            if on_token:
+                            if on_token and not held:
                                 on_token(delta.content)
-                            if on_sentence:
+                            if on_sentence and not held:
                                 sentence_buffer += delta.content
                                 done, sentence_buffer = _split_sentences(sentence_buffer)
                                 for s in done:
@@ -572,6 +582,15 @@ class Brain:
                         continue
                     raise
 
+                actionlog.record("model", e.model, ms=round((time.monotonic() - self._stream_began) * 1000),
+                                 waited=round(self._stream_waited), tokens=usage.total_tokens if usage else None)
+                if held:
+                    content = _THINKING.sub("", content).strip()
+                    if not calls:
+                        if on_token and content:
+                            on_token(content)
+                        if on_sentence and content:
+                            on_sentence(content)
                 if on_sentence and sentence_buffer.strip() and not calls:
                     on_sentence(sentence_buffer.strip())
                 if usage:

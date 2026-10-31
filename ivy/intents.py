@@ -54,8 +54,10 @@ _ABOUT_ME = re.compile(
     r"|\b(?:which|what) models?\b.*\b(?:you|using|running)\b|\bcan (?:i|we|you) (?:switch|change)\b.*\bmodels?\b"
     r"|\bare you on\b.*\bmodels?\b")
 _NOT_ME = re.compile(r"\b(cpu|disk|memory|ram|battery|data|phone|water|gas)\b")
-_SWITCH = re.compile(r"\b(?:switch|change|use|go to|move)\b.*\b(?:(lightest|lighter|smallest|fastest)"
-                     r"|(heaviest|heavier|biggest|strongest)|(automatic|auto|the router))(?: one| model| mode)?$")
+_SWITCH = re.compile(r"\b(?:switch|change|use|go|move|put|set|try)\b.*\b(?:(lightest|lighter|smallest|fastest|light)"
+                     r"|(heaviest|heavier|biggest|strongest|heavy)|(automatic|auto|the router))"
+                     r"(?: one| models?| mode| version)?(?: (?:please|now|instead|for now|from now on|again))*$")
+_LIGHT_ALONE = re.compile(r"\b(?:light|heavy)(?: mode)?(?: please| now)*$")
 
 
 def about_ivy(text: str) -> str | None:
@@ -63,7 +65,7 @@ def about_ivy(text: str) -> str | None:
     these from training, so they never reach the model."""
     t = _clean(text).replace("\u2019", "'")
     m = _SWITCH.search(t)
-    if m:
+    if m and (not _LIGHT_ALONE.search(t)):
         return "fast" if m.group(1) else "main" if m.group(2) else "auto"
     return "status" if len(t) <= 120 and _ABOUT_ME.search(t) and not _NOT_ME.search(t) else None
 
