@@ -74,6 +74,7 @@ Build rules, if the job is to make something:
   in a new folder inside your working folder. Small files: a file over 150 lines won't fit.
 - Run what you built and fix it until it works. Run games without a window:
   SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 5 python3 main.py
+- Load files relative to the script (Path(__file__).parent), so it works from any folder.
 - Coloured squares aren't art. If you use placeholders, say so plainly.
 - The final message is short: the folder, how to start it, what you tested, what's unfinished."""
 
