@@ -133,7 +133,7 @@ def _battery() -> str | None:
     return battery_alert(subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True).stdout)
 
 
-_announced_events: set[str] = set()
+_announced_events: dict[str, float] = {}     # title → start time last announced
 
 
 def calendar_alerts(rows: str, lead_minutes: int) -> list[str]:
@@ -144,9 +144,10 @@ def calendar_alerts(rows: str, lead_minutes: int) -> list[str]:
         if not seconds.lstrip("-").isdigit() or not title:
             continue
         seconds = int(seconds)
-        key = f"{title}@{round((time.time() + seconds) / 60)}"
-        if 0 <= seconds <= lead_minutes * 60 and key not in _announced_events:
-            _announced_events.add(key)
+        start = time.time() + seconds
+        repeat = abs(start - _announced_events.get(title, 0)) < 120     # same event, read again
+        if 0 <= seconds <= lead_minutes * 60 and not repeat:
+            _announced_events[title] = start
             minutes = max(1, round(seconds / 60))
             out.append(f"{title} starts in {minutes} minute{'s' if minutes != 1 else ''}.")
     return out

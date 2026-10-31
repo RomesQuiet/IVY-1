@@ -102,6 +102,10 @@ and typing are exempt so screen work isn't one dialog per click.
 
 ## Teaching Ivy
 
+Correct her ("no, I meant Safari", "from now on use metric") and she keeps lasting lessons
+as memories, tells you in the chat, and forgets one if you say "forget that". Only your own
+words are studied, never web pages or the screen.
+
 Ask her: *"learn a skill that …"*. She writes `skills/<name>.py`, it's validated by
 importing it, and the new tool is usable immediately and after restarts. You can
 write skills by hand too — see `skills/crypto_prices.py`.

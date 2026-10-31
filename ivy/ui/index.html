@@ -459,6 +459,7 @@ window.setWakeUI = function(on) {
 };
 
 window.showAlert = (text) => { addMsg('note', '🔔 ' + text); };
+window.showLearned = (text) => { addMsg('system', `🧠 Learned: ${text} Say "forget that" to undo.`); };
 
 // Her code changed on disk while this window was open.
 window.showUpdate = () => {

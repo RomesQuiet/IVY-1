@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from openai import APIConnectionError, APIError, APIStatusError, RateLimitError
 
-from . import config, context, intents, senses, toolkit
+from . import config, context, intents, learning, senses, toolkit
 from . import tools as _tools  # noqa: F401  (registers every tool)
 from .memory import get_store
 from .router import classify, get_pool
@@ -105,6 +105,10 @@ class Brain:
         self._state: dict | None = None
         self._carry_groups: set[str] = set()
         self._cancel = threading.Event()
+        self.on_learned = None         # called with each new lesson's text
+        self._turn = {"request": "", "did": []}
+        self._new_lessons: list[str] = []
+        self.learner: threading.Thread | None = None
         self.messages = [{"role": "system", "content": self._build_system_prompt()}]
 
     # -----------------------------------------------------------------
@@ -297,6 +301,10 @@ class Brain:
              on_tool_result=None):
         self._cancel.clear()
         self._tainted = False
+        self._start_learning(user_input)
+        for note in self._new_lessons:
+            self.messages.append({"role": "assistant", "content": note})
+        self._new_lessons = []
         self._trim_history()
 
         # ---- 1. instant path ----
@@ -307,6 +315,8 @@ class Brain:
             instant = None
         if instant:
             reply, name, args, result = instant
+            if name:
+                self._turn["did"].append(name)
             if name and on_tool:
                 on_tool(name, args)
             if name and on_tool_result:
@@ -443,6 +453,22 @@ class Brain:
             self._drop_open_turn(turn_start)
             return self._quota_message(str(err))
 
+    def _start_learning(self, said: str):
+        """Corrections are studied in the background so the reply isn't held up."""
+        previous, self._turn = self._turn, {"request": said, "did": []}
+        if not learning.worth_checking(said):
+            return
+
+        def study():
+            entry = learning.study(said, previous["request"], ", ".join(previous["did"]))
+            if entry:
+                self._new_lessons.append(f"(I saved a memory, id {entry['id']}: {entry['text']})")
+                if self.on_learned:
+                    self.on_learned(entry["text"])
+
+        self.learner = threading.Thread(target=study, daemon=True, name="learner")
+        self.learner.start()
+
     def _context_for(self, user_input, on_tool, on_tool_result) -> str:
         """When Romeu says "this", attach what he's looking at, as outside content."""
         if not context.wanted(user_input):
@@ -503,6 +529,7 @@ class Brain:
                 continue
             limit = PER_TOOL_LIMIT.get(c["name"], DEFAULT_TOOL_LIMIT)
             counts[c["name"]] = counts.get(c["name"], 0) + 1
+            self._turn["did"].append(c["name"])
             if counts[c["name"]] > limit:
                 results[c["id"]] = (f"Stop: {c['name']} was already called {limit} times for this "
                                     "request. Answer with what you have, or use a different tool.")

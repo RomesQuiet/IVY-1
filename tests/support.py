@@ -138,8 +138,14 @@ class FakeModel:
 
     def __init__(self, steps, remaining=7000):
         self.steps, self.requests, self.remaining = list(steps), [], remaining
+        self.lessons = []          # replies for learning's one-off (non-streaming) call
         self.chat = SimpleNamespace(completions=SimpleNamespace(
-            with_raw_response=SimpleNamespace(create=self._create)))
+            create=self._plain, with_raw_response=SimpleNamespace(create=self._create)))
+
+    def _plain(self, **kw):
+        self.requests.append(copy.deepcopy(kw))
+        message = SimpleNamespace(content=self.lessons.pop(0) if self.lessons else "{}")
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
     def _create(self, **kw):
         self.requests.append(copy.deepcopy(kw))

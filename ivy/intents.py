@@ -10,7 +10,7 @@ and work even while every model is rate-limited. Anything ambiguous, compound
 import datetime
 import re
 
-from . import toolkit
+from . import learning, toolkit
 from .tools import resolve_app
 
 _FILLER = re.compile(
@@ -152,6 +152,8 @@ def run(text: str):
     name, payload = hit
     if name is None:
         return payload, None, {}, payload
+    if learning.applies(name, text):
+        return None     # something Romeu taught her may change this: the agent knows it
     result = toolkit.run(name, payload)
     if _FAILED.search(result):
         return None     # let the agent work it out (it can try other routes)

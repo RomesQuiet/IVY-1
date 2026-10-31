@@ -22,6 +22,7 @@ def main():
     print("Commands:  /voice  /wake  /text  /reset  /memories  /model <name>  /doctor  /quit\n")
 
     brain = Brain()
+    brain.on_learned = lambda text: print(f"\n🧠 Learned: {text} Say \"forget that\" to undo.")
     for warm_up in (voice.warm_up, senses.warm_up, mcp_client.load_all):
         threading.Thread(target=warm_up, daemon=True).start()
     for line in senses.doctor():

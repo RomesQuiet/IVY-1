@@ -58,7 +58,7 @@ GROUPS = {
     "software": ("install, uninstall, search packages and apps",
                  r"\b(install|uninstall|remove|brew|homebrew|pip|npm|package|app store|update)\b"),
     "memory":   ("delete memories",
-                 r"\b(forget|erase|wipe)\b|\bdelete .{0,15}memor"),
+                 r"\b(forget|erase|wipe|undo)\b|\bdelete .{0,15}memor"),
     "life":     ("Messages/iMessage, Contacts, Mail (send, unread), Calendar (events, add), "
                  "Reminders, Notes",
                  r"\b(reply|message|imessage|text (him|her|them|my|to)|sms|contact|phone number|e-?mail|mail|inbox|"

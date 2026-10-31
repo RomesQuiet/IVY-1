@@ -285,6 +285,7 @@ class IvyApp:
             from ivy.brain import Brain
             voice = _voice
             self.brain = Brain(confirm=self._confirm)
+            self.brain.on_learned = lambda text: self._js(f"window.showLearned({json.dumps(text)})")
         except Exception as e:
             print(f"[startup error] {e}")
             self._js(f"window.showError({json.dumps('Startup failed: ' + str(e))})")

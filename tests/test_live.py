@@ -71,6 +71,17 @@ class RealRequests(unittest.TestCase):
         self.assertIn("read_context", used)
         self.assertRegex(reply, r"30")
 
+    def test_learns_lasting_lessons_but_not_one_offs(self):
+        from ivy import learning
+        from ivy.memory import get_store
+        get_store().clear()
+        self.assertIsNotNone(learning.study("from now on always use metric units", "how far is Porto"))
+        self.assertIsNotNone(learning.study("no, I meant Safari", "open the browser", "open_app"))
+        self.assertIsNone(learning.study("no, make it 7 minutes", "set a 5 minute timer", "set_timer"))
+        self.assertIsNone(learning.study("no, the second video", "play gotham chess", "play_youtube"))
+        self.assertIsNone(learning.study("that's wrong, try again", "what's 2+2", "calculate"))
+        get_store().clear()
+
     def test_fixes_a_bug_in_a_file(self):
         with tempfile.TemporaryDirectory() as d:
             f = Path(d) / "stats.py"
