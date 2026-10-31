@@ -72,6 +72,14 @@ Create `mcp_servers.json` in the project root, same format as Claude Desktop (lo
 servers). Each server's tools load on demand and ask before acting unless the server has
 `"trusted": true`. See the top of `ivy/mcp_client.py`.
 
+## Tests
+
+```bash
+python -m tests.run            # offline: free, can't touch your Mac
+python -m tests.run --live     # also asks the real model (uses Groq quota)
+python -m tests.run --gui      # also drives the real app (a window flashes)
+```
+
 ## Keys (`.env`)
 
 | Key | Needed | What it adds |
