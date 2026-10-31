@@ -78,7 +78,7 @@ def match(text: str) -> tuple[str, dict] | tuple[None, str] | None:
         return "media_control", {"action": "next"}
     if re.fullmatch(r"(?:previous|last|go back)(?: song| track)|back a song", t):
         return "media_control", {"action": "previous"}
-    if re.fullmatch(r"what(?:'s| is) (?:this song|playing|this)|what song is this|who sings this", t):
+    if re.fullmatch(r"what(?:'s| is) (?:this song|playing)|what song is this|who sings this", t):
         return "media_control", {"action": "now_playing"}
 
     # --- volume ---

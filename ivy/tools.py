@@ -256,9 +256,9 @@ def open_in_browser(url: str, browser: str = "") -> str:
     return url
 
 
-@tool(browser="Only if Romeu names one, e.g. 'Safari'; otherwise his default browser")
+@tool(browser="Only if Romeu names one, e.g. 'Safari'; otherwise the default browser")
 def open_url(url: str, browser: str = "") -> str:
-    """SHOW a web page to Romeu in his browser. Only when he asks to open/see something —
+    """SHOW a web page to Romeu in the browser. Only when asked to open or see something —
     Ivy can't read what's opened; to read a page use fetch_webpage."""
     return f"Opened {open_in_browser(url, browser)}."
 
@@ -281,7 +281,7 @@ _SEARCH_SITES = {
 def browse(query: str, site: Literal["google", "youtube", "maps", "images", "news", "wikipedia",
                                      "amazon", "github", "reddit", "translate"] = "google") -> str:
     """SHOW search results in Romeu's browser (Google, Maps directions, Amazon, GitHub…).
-    Only when he wants to see them — Ivy can't read the page. To find an answer, use web_search."""
+    Only when Romeu wants to see them — Ivy can't read the page. To find an answer, use web_search."""
     url = _SEARCH_SITES[site].format(quote(query))
     open_in_browser(url)
     return f"Opened {site} results for '{query}'."
@@ -626,7 +626,7 @@ def forget_all() -> str:
 
 
 # Register the rest: macOS control, media, everyday apps, and learned skills.
-from . import skills, tools_life, tools_mac, tools_media  # noqa: E402,F401
+from . import context, skills, tools_life, tools_mac, tools_media  # noqa: E402,F401
 skills.load_all()
 
 

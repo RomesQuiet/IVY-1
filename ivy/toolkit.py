@@ -61,7 +61,7 @@ GROUPS = {
                  r"\b(forget|erase|wipe)\b|\bdelete .{0,15}memor"),
     "life":     ("Messages/iMessage, Contacts, Mail (send, unread), Calendar (events, add), "
                  "Reminders, Notes",
-                 r"\b(message|imessage|text (him|her|them|my|to)|sms|contact|phone number|e-?mail|mail|inbox|"
+                 r"\b(reply|message|imessage|text (him|her|them|my|to)|sms|contact|phone number|e-?mail|mail|inbox|"
                  r"calendar|schedule|agenda|event|meeting|appointment|remind|reminders?|to-?do|notes?)\b"),
     "control":  ("click things by their visible text, wait for text, click by name or position, "
                  "type, press keys, scroll, browser JavaScript",
@@ -135,6 +135,7 @@ _VERBS = {
     "click_text": "🖱 Clicking", "wait_for_text": "⏳ Waiting for", "type_text": "⌨️ Typing",
     "press_key": "⌨️ Key", "read_file": "📄 Reading", "write_file": "📝 Writing", "edit_file": "📝 Editing",
     "find_files": "🔎 Finding files", "search_in_files": "🔎 Searching files",
+    "read_context": "👁 Reading what's in front", "reply_email": "✉️ Reply",
     "install_package": "📦 Installing", "uninstall_package": "📦 Uninstalling", "use_tools": "🧰 Unlocking",
 }
 

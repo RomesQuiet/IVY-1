@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from openai import APIConnectionError, APIError, APIStatusError, RateLimitError
 
-from . import config, intents, senses, toolkit
+from . import config, context, intents, senses, toolkit
 from . import tools as _tools  # noqa: F401  (registers every tool)
 from .memory import get_store
 from .router import classify, get_pool
@@ -144,6 +144,8 @@ class Brain:
             rest = rest[1:]
         for m in rest:
             m.pop("reasoning", None)   # only needed within the turn that produced it
+            if m.get("role") == "user":
+                m["content"] = context.shorten(m["content"])
             if m.get("role") == "tool" and len(m["content"]) > OLD_TOOL_RESULT_CHARS:
                 m["content"] = m["content"][:OLD_TOOL_RESULT_CHARS] + " …(older result trimmed)"
         self.messages = [system] + rest
@@ -326,7 +328,8 @@ class Brain:
             print(f"  (couldn't read the Mac's state: {e})")
             self._state = None
         self.messages[0] = {"role": "system", "content": self._build_system_prompt()}
-        self.messages.append({"role": "user", "content": user_input})
+        self.messages.append({"role": "user", "content": user_input + self._context_for(
+            user_input, on_tool, on_tool_result)})
         turn_start = len(self.messages) - 1
         difficulty = classify(user_input)
         groups = toolkit.groups_for(user_input) | self._carry_groups
@@ -439,6 +442,25 @@ class Brain:
         except OutOfQuota as err:
             self._drop_open_turn(turn_start)
             return self._quota_message(str(err))
+
+    def _context_for(self, user_input, on_tool, on_tool_result) -> str:
+        """When Romeu says "this", attach what he's looking at, as outside content."""
+        if not context.wanted(user_input):
+            return ""
+        if on_tool:
+            on_tool("read_context", {})
+        try:
+            found = context.gather(user_input, self._state)
+        except Exception as e:
+            print(f"  (couldn't read the context: {e})")
+            found = None
+        if on_tool_result:
+            summary = f"{found['source']} ({len(found['text'])} characters)" if found else "Nothing readable in front."
+            on_tool_result("read_context", {}, summary)
+        if not found:
+            return ""
+        self._tainted = True
+        return context.render(found)
 
     def _drop_open_turn(self, turn_start: int):
         """Leave history valid after an interrupted turn (no dangling tool calls)."""

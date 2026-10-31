@@ -44,6 +44,14 @@ Esc or the ■ button stops a request. 💤 turns on "OK Ivy" wake-word mode.
   Recurring calendar events are missed, because Calendar's scripting doesn't expand them.
 - Ask "tell me when…" and she writes a background rule as a skill. See the top of `ivy/watcher.py`.
 
+## "This"
+
+Say "summarise this page", "explain this", "translate this" or "reply to this email" and Ivy
+reads what's in front: selected text, the email selected in Mail, the browser page, files
+selected in Finder, or the window's text. Reading logged-in pages needs "Allow JavaScript
+from Apple Events" in the browser (Brave: View → Developer); otherwise she downloads the
+page without your login. Email replies stay as drafts unless you ask her to send.
+
 ## Giving Ivy eyes and hands
 
 macOS blocks both until you allow them, for whichever app launches her (Terminal, Python

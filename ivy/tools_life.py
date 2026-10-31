@@ -86,6 +86,19 @@ def send_email(to: str, subject: str, body: str, send: bool = False) -> str:
     return f"Email to {address} {'sent' if send else 'drafted and open in Mail'}."
 
 
+@tool(group="life", confirm="action", body="The reply text",
+      send="False = leave the draft open for Romeu to review (safer); True = send immediately")
+def reply_email(body: str, send: bool = False) -> str:
+    """Reply to the email selected in Apple Mail, keeping the quoted original."""
+    _osa(f'tell application "Mail"\n'
+         f'set picked to selection\n'
+         f'if picked is {{}} then error "No email is selected in Mail."\n'
+         f'set r to reply (item 1 of picked) with opening window\n'
+         f'set content of r to {_as_str(body)} & return & return & (content of r)\n'
+         + ("send r\n" if send else "activate\n") + 'end tell', timeout=30)
+    return "Reply sent." if send else "Reply drafted and open in Mail, not sent."
+
+
 @tool(group="life", untrusted=True)
 def unread_email(limit: int = 8) -> str:
     """Senders and subjects of the newest unread emails in Apple Mail."""
