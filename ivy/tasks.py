@@ -124,7 +124,7 @@ def start(goal: str) -> Task:
     return task
 
 
-@tool(confirm="task", goal="The whole job in one self-contained instruction, with every detail needed")
+@tool(group="tasks", confirm="task", goal="The whole job in one self-contained instruction, with every detail needed")
 def start_task(goal: str) -> str:
     """Run a long job in the background so Romeu can keep working: research, comparisons,
     reports, anything taking many steps that doesn't need the screen, mouse or keyboard."""

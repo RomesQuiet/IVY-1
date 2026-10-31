@@ -16,7 +16,7 @@ from urllib.parse import quote
 
 import requests
 
-from . import config, senses
+from . import config, safety, senses
 from .memory import get_store
 from .toolkit import TOOLS, tool
 
@@ -293,7 +293,7 @@ _SEARCH_SITES = {
 }
 
 
-@tool(query="What to search for", site="Where to search")
+@tool(group="web", query="What to search for", site="Where to search")
 def browse(query: str, site: Literal["google", "youtube", "maps", "images", "news", "wikipedia",
                                      "amazon", "github", "reddit", "translate"] = "google") -> str:
     """SHOW search results in Romeu's browser (Google, Maps directions, Amazon, GitHub…).
@@ -453,17 +453,22 @@ def list_installed_apps() -> str:
 def run_shell(command: str) -> str:
     """Run a shell command on this Mac and return its output; it's stopped after 55 s.
     Starts in Ivy's working folder. Use for anything other tools don't cover."""
+    refused = safety.forbidden(command)
+    if refused:
+        return refused
     r = _sh(["/bin/zsh", "-lc", command], timeout=55, cwd=str(workspace()))
     out = ((r.stdout or "") + (r.stderr or "")).strip() or "(no output)"
     return out if r.returncode == 0 else f"exit {r.returncode}\n{out}"
 
 
-@tool(confirm="shell", timeout=130, code="Python 3 source; print() what you want back")
+@tool(group="files", confirm="shell", timeout=130, code="Python 3 source; print() what you want back")
 def run_python(code: str) -> str:
     """Run a Python script on this Mac (requests, numpy and the standard library are
     available). Use for calculations, data work, file processing, APIs — anything."""
     import sys
-    import tempfile
+    refused = safety.forbidden_python(code)
+    if refused:
+        return refused
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
         f.write(code)
     try:
@@ -474,10 +479,13 @@ def run_python(code: str) -> str:
     return out if r.returncode == 0 else f"exit {r.returncode}\n{out}"
 
 
-@tool(timeout=20, command="zsh command, e.g. 'python3 main.py'", folder="Folder to run it in")
+@tool(group="files", timeout=20, command="zsh command, e.g. 'python3 main.py'", folder="Folder to run it in")
 def launch_program(command: str, folder: str = "") -> str:
-    """Start something that keeps running on its own (a game, app or server) and check it survived
-    the first seconds. If it crashes, returns the error output."""
+    """Start something that keeps running (a game, app or server) and check it survived the first
+    seconds. If it crashes, returns the error output."""
+    refused = safety.forbidden(command)
+    if refused:
+        return refused
     cwd = resolve_path(folder) if folder else workspace()
     if not cwd.is_dir():
         return f"NOT DONE: there's no folder {cwd}."
@@ -589,11 +597,16 @@ def install_package(name: str, manager: Manager = "brew") -> str:
     return f"Install of {name} failed:\n" + "\n".join(errors)
 
 
-@tool(group="software", confirm="action", timeout=300,
+_NEVER_UNINSTALL = {"ivy", "claude", "finder", "safari", "terminal", "python", "system settings"}
+
+
+@tool(group="software", confirm="always", timeout=300,
       manager="'app' moves a .app from /Applications to the Trash; others use that package manager")
 def uninstall_package(name: str, manager: Manager = "brew") -> str:
-    """Uninstall software from this Mac."""
+    """Uninstall ONE app or package; Romeu confirms each one. Apps go to the Trash."""
     name = name.strip()
+    if name.lower().removesuffix(".app") in _NEVER_UNINSTALL:
+        return f"NOT DONE: {name} is protected. Romeu can remove it in Finder."
     if manager in ("app", "appstore"):
         app = name if name.endswith(".app") else name + ".app"
         for d in (Path("/Applications"), Path.home() / "Applications"):
@@ -655,7 +668,7 @@ def forget(memory_id_or_text: str) -> str:
     return ("Forgotten:\n" + "\n".join(deleted)) if deleted else f"No memory matches '{arg}'."
 
 
-@tool(group="memory", confirm="action")
+@tool(group="memory", confirm="always")
 def forget_all() -> str:
     """Erase EVERY memory. Only when the user explicitly asks to wipe all memories."""
     return f"Cleared all {get_store().clear()} memories."

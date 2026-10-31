@@ -52,7 +52,7 @@ def _focus(app: str = ""):
 # APPLESCRIPT
 # =====================================================================
 
-@tool(confirm="action", timeout=35, code="AppleScript source")
+@tool(group="control", confirm="action", timeout=35, code="AppleScript source")
 def applescript(code: str) -> str:
     """Run AppleScript — the master key for macOS automation: Messages, Mail, Calendar,
     Reminders, Finder, window management, System Settings, any scriptable app. Use when
@@ -127,7 +127,7 @@ def run_js_browser(code: str, browser: Literal["Safari", "Chrome"] = "Safari") -
 # EYES
 # =====================================================================
 
-@tool(untrusted=True, ack="Taking a look.", timeout=45,
+@tool(group="screen", untrusted=True, ack="Taking a look.", timeout=45,
       app="An app's name to read its window (even behind others), 'screen' for the whole "
           "display, or empty for the front window")
 def read_screen(app: str = "") -> str:
@@ -142,7 +142,7 @@ def read_screen(app: str = "") -> str:
         + "\n".join(lines) + extra
 
 
-@tool(confirm="vision", untrusted=True, ack="Let me look.", timeout=45,
+@tool(group="screen", confirm="vision", untrusted=True, ack="Let me look.", timeout=45,
       question="What you want to know about what's on screen",
       app="An app's name, 'screen' for the whole display, or empty for the front window")
 def see_screen(question: str, app: str = "") -> str:

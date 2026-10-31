@@ -92,6 +92,14 @@ class Tools(unittest.TestCase):
         finally:
             support._ALLOWED_COMMANDS.discard("zsh")
 
+    def test_homebrew_is_found_when_opened_from_finder(self):
+        # apps get a bare PATH, so every install failed and she blamed Homebrew
+        env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "GROQ_API_KEY": "x", "HOME": str(Path.home())}
+        script = ROOT / "tests" / "fake_path_check.py"
+        r = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True, cwd=ROOT)
+        self.assertIn("brew", r.stdout, r.stderr)
+        self.assertNotIn("missing", r.stdout)
+
     def test_applescript_quoting(self):
         self.assertEqual(tools._as_str('a"b\\c'), '"a\\"b\\\\c"')
 

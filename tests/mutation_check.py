@@ -39,6 +39,10 @@ BUGS = [
     ("retry storm after a 429", "ivy/router.py", "e.blocked_until = e.seen_at = time.time() + wait", "e.seen_at = time.time() + wait"),
     ("replies don't reach the chat", "ivy/brain.py", "        if on_token:\n            on_token(reply)\n", ""),
     ("a build task needs no files", "ivy/tasks.py", "and not _made_files(task):\n            # it described", "and False:\n            # it described"),
+    ("the shell runs anything", "ivy/brain.py", '"run_shell": safety.shell_risk,', '"run_shell": lambda a: None,'),
+    ("/Applications can be deleted with OK", "ivy/tools.py", "refused = safety.forbidden(command)\n    if refused:\n        return refused\n    r = _sh", "r = _sh"),
+    ("Ivy can uninstall herself", "ivy/tools.py", 'if name.lower().removesuffix(".app") in _NEVER_UNINSTALL:', "if False:"),
+    ("scripts dodge the allowlist", "ivy/safety.py", 'return python_risk(text) or ("it would delete apps" if forbidden_python(text) else None)', "return None"),
     ("page function renamed", "ivy/ui/index.html", "window.toolDone =", "window.toolFinished ="),
 ]
 

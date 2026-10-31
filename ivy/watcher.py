@@ -176,7 +176,7 @@ def _calendar() -> str | None:
     r = subprocess.run(["osascript", "-e", CALENDAR_SCRIPT.format(minutes=minutes)],
                        capture_output=True, text=True, timeout=45)
     if r.returncode:
-        raise RuntimeError(r.stderr.strip()[:200])
+        raise RuntimeError(r.stderr.strip()[:200] or "Calendar didn't answer")
     return " ".join(calendar_alerts(r.stdout, minutes)) or None
 
 

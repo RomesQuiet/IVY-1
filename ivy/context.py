@@ -143,7 +143,7 @@ def shorten(message: str, keep: int = 1500) -> str:
     return head + mark + rest[:keep] + " …(older context trimmed)"
 
 
-@tool(untrusted=True, timeout=30)
+@tool(group="screen", untrusted=True, timeout=30)
 def read_context() -> str:
     """Read what Romeu is looking at right now: selected text, the open email, the browser
     page, or the front window. Use for "this" when no context came with the request."""

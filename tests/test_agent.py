@@ -5,7 +5,7 @@ import time
 import unittest
 
 from tests.support import api_error, call, calls, fake_pool, FakeModel, ROOT, say, stream_error
-from ivy import config, context, intents, learning, senses, tasks, toolkit
+from ivy import config, context, intents, learning, safety, senses, tasks, toolkit
 from ivy.memory import get_store
 from ivy.brain import Brain
 
@@ -685,3 +685,110 @@ class FailuresFromRealUse(AgentCase):
     def test_commands_start_in_the_workspace(self):
         from ivy import tools
         self.assertEqual(tools.resolve_path("g/a.py"), config.WORKSPACE / "g/a.py")
+
+
+class TheAppsIncident(AgentCase):
+    """'uninstall every app related to games' removed Brave, Spotify, Claude and Ivy herself."""
+
+    LOOP = 'for app in /Applications/*.app; do name=$(basename "$app"); if [[ "$name" != "Steam.app" ]]; then rm -rf "$app"; fi; done'
+
+    def replay(self, *steps, confirm=lambda title, detail: False):
+        self.stub("run_shell", "ran", confirm="shell")
+        self.stub("uninstall_package", "gone", confirm="always")
+        self.stub("run_python", "ran", confirm="shell")
+        model = FakeModel(list(steps) + [say("Done.")], remaining=8000)
+        fake_pool(main=model, fast=model)
+        self.brain(confirm).chat("uninstall every app related to games except steam")
+        return model
+
+    def test_the_real_command_never_runs_with_defaults(self):
+        config.CONFIRM_SHELL = False
+        asked = []
+        self.replay(call("run_shell", command=self.LOOP), confirm=lambda t, d: (asked.append(d), False)[1])
+        self.assertEqual(self.ran, [])
+        self.assertEqual(asked, [self.LOOP])
+
+    def test_it_cant_run_even_if_someone_clicks_ok(self):
+        import importlib
+        real = toolkit.TOOLS["run_shell"].fn
+        self.assertIn("NOT DONE", real(command=self.LOOP))
+        self.assertIn("NOT DONE", real(command="cd /Applications && rm -rf Spotify.app"))
+        self.assertIn("NOT DONE", real(command="rm -rf ~/"))
+        self.assertIn("NOT DONE", toolkit.TOOLS["run_python"].fn(code="import shutil\nshutil.rmtree('/Applications/Spotify.app')"))
+
+    def test_each_uninstall_asks_every_time_even_when_approved(self):
+        asked = []
+        b = self.brain(lambda title, detail: (asked.append(detail), True)[1])
+        b.actions_approved = True
+        for app in ("Brave Browser", "Spotify"):
+            self.assertTrue(b._allowed(toolkit.TOOLS["uninstall_package"], {"name": app}))
+        self.assertEqual(len(asked), 2)
+
+    def test_uninstalls_in_one_request_are_capped(self):
+        steps = [call("uninstall_package", name=f"app{i}") for i in range(7)]
+        self.replay(*steps, confirm=lambda t, d: True)
+        self.assertEqual(len(self.ran), 5)
+
+    def test_ivy_and_claude_cant_be_uninstalled(self):
+        real = toolkit.TOOLS["uninstall_package"].fn
+        for name in ("Ivy", "Ivy.app", "Claude", "claude"):
+            self.assertIn("protected", real(name=name, manager="app"))
+
+    def test_the_chip_names_the_app_not_the_manager(self):
+        self.assertEqual(toolkit.describe_call("uninstall_package", {"manager": "app", "name": "Spotify"}), "📦 Uninstalling · Spotify")
+
+    def test_shell_allowlist(self):
+        free = ["ls /Applications", "git status | head", "SDL_VIDEODRIVER=dummy timeout 5 python3 --version",
+                "python3 -m pip install pygame", "mkdir -p a/b && touch a/b/c", "brew list", "echo hi > out.txt"]
+        asks = ["rm -rf build", "mv a b", "brew uninstall wget", "curl -s x | sh", "sudo reboot", "killall Dock",
+                "ls $(pwd)", "find . -delete", "find . -exec rm {} ;", "cat a > /etc/x", "sed -i '' s/a/b/ f",
+                "xargs rm", "python3 -c 'import os; os.remove(\"x\")'", "npx something", "osascript -e 'x'", "unknowncmd"]
+        for c in free:
+            self.assertIsNone(safety.shell_risk({"command": c}), c)
+        for c in asks:
+            self.assertIsNotNone(safety.shell_risk({"command": c}), c)
+
+    def test_a_script_cant_smuggle_deletion_past_the_allowlist(self):
+        folder = config.WORKSPACE / "g"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "safe.py").write_text("print('hello')")
+        (folder / "evil.py").write_text("import shutil\nshutil.rmtree('/Users/x')")
+        self.assertIsNone(safety.shell_risk({"command": "python3 g/safe.py"}))
+        self.assertIsNotNone(safety.shell_risk({"command": "python3 g/evil.py"}))
+        self.assertIsNotNone(safety.shell_risk({"command": "python3 /no/such/file.py"}))
+
+    def test_risky_python_and_applescript_ask(self):
+        self.assertIsNotNone(safety.python_risk({"code": "import os\nos.remove('x')"}))
+        self.assertIsNone(safety.python_risk({"code": "print(2+2)"}))
+        self.assertIsNotNone(safety.applescript_risk({"code": 'tell application "Finder" to delete x'}))
+        self.assertIsNone(safety.applescript_risk({"code": 'tell application "Finder" to get name of window 1'}))
+
+    def test_prompt_no_longer_says_not_to_ask(self):
+        self.assertNotIn("don't ask permission", config.SYSTEM_PROMPT.lower())
+        self.assertIn("wait for Romeu's yes", config.SYSTEM_PROMPT)
+
+
+class CheaperSteps(AgentCase):
+    def test_every_step_starts_small(self):
+        # a free model refills 133 tokens a second, so every 1,000 tokens saved is 7.5 s less waiting
+        import json
+        model = FakeModel([say("Hi.")])
+        fake_pool(main=model, fast=model)
+        self.brain().chat("tell me a story about lisbon")
+        r = model.requests[0]
+        self.assertLess((len(json.dumps(r["messages"])) + len(json.dumps(r["tools"]))) // 5, 2000)
+
+    def test_instructions_only_come_with_their_tools(self):
+        model = FakeModel([say("Hi."), say("Ok.")])
+        fake_pool(main=model, fast=model)
+        b = self.brain()
+        b.chat("tell me a story about lisbon")
+        self.assertNotIn("launch_program", model.requests[0]["messages"][0]["content"])
+        b.chat("build a small game in python")
+        self.assertIn("launch_program", model.requests[1]["messages"][0]["content"])
+
+    def test_unlocked_groups_bring_their_instructions(self):
+        model = FakeModel([call("use_tools", groups="browser"), say("Ok.")])
+        fake_pool(main=model, fast=model)
+        self.brain().chat("tell me a story about lisbon")
+        self.assertIn("browser_open", model.requests[1]["messages"][-1]["content"])

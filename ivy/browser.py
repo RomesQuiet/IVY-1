@@ -184,7 +184,7 @@ def browser_open(url: str) -> str:
         return _where(tab)
 
 
-@tool(group="browser", timeout=30, untrusted=True)
+@tool(group="browser", timeout=50, untrusted=True)
 def browser_read() -> str:
     """See the page in Ivy's browser: its text and a numbered list of every button, link and field."""
     with _lock:

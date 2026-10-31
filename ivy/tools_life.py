@@ -207,7 +207,7 @@ def system_toggle(action: Literal["dark_mode_on", "dark_mode_off", "dark_mode_to
     return f"Done: {action.replace('_', ' ')}."
 
 
-@tool(group="system", confirm="action")
+@tool(group="system", confirm="always")
 def power(action: Literal["sleep", "restart", "shut_down", "log_out"]) -> str:
     """Put the Mac to sleep, restart, shut down or log out."""
     verb = {"sleep": "sleep", "restart": "restart", "shut_down": "shut down", "log_out": "log out"}[action]

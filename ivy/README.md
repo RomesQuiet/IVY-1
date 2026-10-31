@@ -91,6 +91,11 @@ python -m tests.run --gui      # also drives the real app (a window flashes)
 
 ## Safety
 
+Commands are judged by an allowlist (`ivy/safety.py`): read-only and project-building commands
+run freely, anything else shows you the exact command every time, whatever your settings.
+Loops and deletions always ask. Deleting from `/Applications`, system folders or your home
+folder with a command is refused outright, and apps are uninstalled one at a time to the Trash.
+
 Tools that change things (AppleScript, UI control, messages, email, events, installs,
 power, new skills) ask first — once per session by default (`ACTION_MODE` in
 `config.py`). `run_shell` / `run_python` ask only if `CONFIRM_SHELL = True`.

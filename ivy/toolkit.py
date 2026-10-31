@@ -32,6 +32,7 @@ class Tool:
     confirm: str | None    # None = safe, "action" = ACTION_MODE, "shell" = CONFIRM_SHELL,
                            # "vision" = uploads a screenshot, needs CLOUD_VISION consent
                            # "task" = free, unless outside content may have prompted it
+                           # "always" = can't be undone: asks every single time
     ack: str | None        # short phrase spoken in voice mode before a slow tool runs
     timeout: float
     untrusted: bool = False   # returns outside content (web, screen, mail): data, not orders
@@ -43,37 +44,37 @@ TOOLS: dict[str, Tool] = {}
 # re-sent on every call. So each request gets the small core set plus the groups
 # its wording points at; the model can unlock any other group with use_tools.
 GROUPS = {
-    "media":    ("volume, pause/next/previous, what's playing, list YouTube results",
+    "media":    ("volume, playback, what's playing",
                  r"\b(volume|louder|quieter|mute|pause|resume|skip|next|previous|song|track|"
                  r"playing|music|spotify|youtube results|list videos)\b"),
-    "web":      ("deep research, reading a web page's text",
-                 r"\b(research|in depth|deep dive|read (this|the|that)|article|page|url|link|https?://)"),
-    "system":   ("battery/disk, notifications, clipboard, screenshots, timers list/cancel, quit apps, "
-                 "dark mode, Wi-Fi, brightness, lock screen, sleep/restart/shut down",
+    "web":      ("deep research, read a page, show search results or maps",
+                 r"\b(research|in depth|deep dive|read (this|the|that)|article|page|url|link|https?://|"
+                 r"google|maps|directions|show me|look up)"),
+    "screen":   ("read or look at the screen, what Romeu is looking at",
+                 r"\b(screen|see|look|looking|window|front|this|display)\b"),
+    "system":   ("battery, disk, clipboard, notifications, screenshots, quit apps, dark mode, Wi-Fi, power",
                  r"\b(battery|disk|storage|space|uptime|notif|clipboard|copy|paste|screenshot|screen ?shot|"
                  r"timers?|cancel|running|installed|apps|quit|close|dark mode|light mode|wi-?fi|brightness|"
                  r"lock|sleep|restart|reboot|shut ?down|log ?out)\b"),
-    "files":    ("list, read, write, edit, find and search files",
+    "files":    ("files, Python, building projects, running programs",
                  r"\b(files?|folders?|director|desktop|downloads|documents|read |write|edit|code|"
-                 r"project|repo|find|~/|/users/)"),
-    "software": ("install, uninstall, search packages and apps",
+                 r"project|repo|find|build|create|game|app|script|program|python|run|~/|/users/)"),
+    "software": ("install, uninstall, search apps and packages",
                  r"\b(install|uninstall|remove|brew|homebrew|pip|npm|package|app store|update)\b"),
     "memory":   ("delete memories",
                  r"\b(forget|erase|wipe|undo)\b|\bdelete .{0,15}memor"),
-    "life":     ("Messages/iMessage, Contacts, Mail (send, unread), Calendar (events, add), "
-                 "Reminders, Notes",
+    "life":     ("Messages, Contacts, Mail, Calendar, Reminders, Notes",
                  r"\b(reply|message|imessage|text (him|her|them|my|to)|sms|contact|phone number|e-?mail|mail|inbox|"
                  r"calendar|schedule|agenda|event|meeting|appointment|remind|reminders?|to-?do|notes?)\b"),
-    "control":  ("click things by their visible text, wait for text, click by name or position, "
-                 "type, press keys, scroll, browser JavaScript",
+    "control":  ("AppleScript, click, type, press keys, scroll",
                  r"\b(click|press|type|scroll|button|window|automate|safari|chrome|tab|javascript|"
                  r"keyboard|shortcut|minimi|maximi|fill|form|screen|menu|dialog|wait for)\b"),
-    "browser":  ("Ivy's own browser: open sites, read their controls, click, type, fill forms",
+    "browser":  ("Ivy's browser: use websites, fill forms",
                  r"\b(website|site|form|fill|log ?in|sign ?in|sign ?up|book|booking|reserve|checkout|"
                  r"cart|shop|order|apply|register|on the web|browser_)\b"),
-    "tasks":    ("list or cancel background tasks",
-                 r"\b(background|tasks?|working on|still running)\b"),
-    "skills":   ("learn a new permanent ability (write a skill), list or remove skills",
+    "tasks":    ("background jobs",
+                 r"\b(background|tasks?|working on|still running|research|compare|report|build|create)\b"),
+    "skills":   ("learn a new ability, background rules",
                  r"\b(skill|learn|teach|new ability|from now on you can|build (a|an) tool|"
                  r"(tell|alert|notify|warn|let) me (know )?(when|if)|keep an eye|watch for|monitor)\b"),
 }
@@ -153,7 +154,7 @@ def describe_call(name: str, args: dict) -> str:
     """One readable line for a tool call, e.g. '▶️ YouTube · gotham chess'."""
     verb = _VERBS.get(name, "🛠 " + name.replace("_", " "))
     args = args or {}
-    detail = str(args.get("path") or next((v for v in args.values() if isinstance(v, (str, int, float)) and str(v)), ""))
+    detail = str(args.get("path") or args.get("name") or next((v for v in args.values() if isinstance(v, (str, int, float)) and str(v)), ""))
     if name in ("run_python", "applescript", "create_skill"):
         detail = (args.get("name") or "") if name == "create_skill" else ""
     detail = " ".join(detail.split())
@@ -183,12 +184,11 @@ def _use_tools_schema(missing: list[str]) -> dict:
         "type": "function",
         "function": {
             "name": "use_tools",
-            "description": "Unlock more tools when none of the current ones fit. "
-                           f"Groups: {listing}. Call it, then use the new tools.",
+            "description": f"Unlock more tools. Groups: {listing}.",
             "parameters": {
                 "type": "object",
                 "properties": {"groups": {"type": "string",
-                                          "description": "Comma-separated group names"}},
+                                          "description": "Comma-separated"}},
                 "required": ["groups"],
             },
         },

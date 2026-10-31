@@ -101,7 +101,7 @@ def list_skills() -> str:
     return "\n".join(f"{n}: {', '.join(tools) or '(no tools)'}" for n, tools in sorted(_loaded.items()))
 
 
-@tool(group="skills", confirm="action")
+@tool(group="skills", confirm="always")
 def remove_skill(name: str) -> str:
     """Forget a learned skill. The file moves to the Trash, so it can be recovered."""
     path = config.SKILLS_DIR / f"{name}.py"

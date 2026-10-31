@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from openai import APIConnectionError, APIError, APIStatusError, RateLimitError
 
-from . import browser, config, context, intents, learning, senses, toolkit
+from . import browser, config, context, intents, learning, safety, senses, toolkit
 from . import tools as _tools  # noqa: F401  (registers every tool)
 from .memory import get_store
 from .tools import in_workspace
@@ -35,7 +35,7 @@ MAX_REPLY_TOKENS = 2000          # gpt-oss spends part of this on hidden reasoni
 REPLY_RESERVE = 300              # what a typical reply adds to a request's cost
 REQUEST_BUDGET = 6800            # stay under the 8k-per-request cap with margin
 MAX_WAIT = 45                    # seconds Ivy will wait out a rate limit
-PER_TOOL_LIMIT = {"web_search": 3, "deep_web_search": 2, "fetch_webpage": 4}
+PER_TOOL_LIMIT = {"web_search": 3, "deep_web_search": 2, "fetch_webpage": 4, "uninstall_package": 5}
 DEFAULT_TOOL_LIMIT = 10          # same tool more than this per request = stuck
 OLD_TOOL_RESULT_CHARS = 500
 
@@ -56,6 +56,9 @@ _NOT_IN_BACKGROUND = _UI_TOOLS | {
     "play_music", "media_control", "set_volume", "system_toggle", "power", "read_screen",
     "see_screen", "wait_for_text", "run_js_browser", "list_ui_elements",
     "browser_open", "browser_read"}
+_RISK_CHECKS = {"browser_click": browser.click_risk, "run_shell": safety.shell_risk,
+                "launch_program": safety.shell_risk, "run_python": safety.python_risk,
+                "applescript": safety.applescript_risk}
 _BACKGROUND_PROMPT = """
 You are working alone on a background task. Romeu can't answer questions and is busy on this
 Mac, so you can't use the screen, keyboard or mouse. Make sensible choices and finish the whole
@@ -160,11 +163,14 @@ class Brain:
     # Prompt & history
     # -----------------------------------------------------------------
 
-    def _build_system_prompt(self):
+    def _build_system_prompt(self, groups=()):
         now = datetime.datetime.now().strftime("%A, %d %B %Y, %H:%M")
         prompt = f"{config.SYSTEM_PROMPT}\nRight now it is {now}."
         if self.background:
             prompt += _BACKGROUND_PROMPT
+        for group in sorted(groups):
+            if group in config.PROMPT_EXTRAS:
+                prompt += "\n" + config.PROMPT_EXTRAS[group]
         prompt += f"\nYour working folder is {config.WORKSPACE}."
         if self._state:
             prompt += f"\n\nLive reading of the Mac, taken just now:\n{senses.summary(self._state)}"
@@ -270,8 +276,9 @@ class Brain:
             return True     # her own project folder: nothing else on the Mac is touched
         guarded = self._tainted and t.name not in _UI_TOOLS and t.name not in _HARMLESS_WRITES
         # Buying, deleting or sending for real is never covered by an earlier OK.
-        risk = browser.click_risk(args) if t.name == "browser_click" else None
-        guarded = guarded or bool(risk)
+        check = _RISK_CHECKS.get(t.name)
+        risk = check(args) if check else None
+        guarded = guarded or bool(risk) or t.confirm == "always"
         if t.confirm == "task" and not guarded:
             return True
         if not guarded:
@@ -450,14 +457,14 @@ class Brain:
         except Exception as e:
             print(f"  (couldn't read the Mac's state: {e})")
             self._state = None
-        self.messages[0] = {"role": "system", "content": self._build_system_prompt()}
         self.messages.append({"role": "user", "content": user_input + self._context_for(
             user_input, on_tool, on_tool_result)})
         turn_start = len(self.messages) - 1
         difficulty = classify(user_input)
         groups = toolkit.groups_for(user_input) | self._carry_groups
         if self.background:
-            groups.add("web")       # a task can't stop to ask for better research tools
+            groups |= {"web", "files"}   # a task can't stop to ask for better tools
+        self.messages[0] = {"role": "system", "content": self._build_system_prompt(groups)}
         seen: dict[str, str] = {}            # call signature → result (loop guard)
         counts: dict[str, int] = {}
         nudges = 0
@@ -640,7 +647,8 @@ class Brain:
                 wanted = {g.strip() for g in str(args.get("groups", "")).split(",")}
                 added = wanted & set(toolkit.GROUPS)
                 groups |= added
-                results[c["id"]] = (f"Unlocked: {', '.join(sorted(added))}. Use the new tools now."
+                extras = " ".join(config.PROMPT_EXTRAS.get(g, "") for g in sorted(added))
+                results[c["id"]] = (f"Unlocked: {', '.join(sorted(added))}. Use the new tools now. {extras}"
                                     if added else f"No such group. Valid: {', '.join(toolkit.GROUPS)}.")
                 continue
 
