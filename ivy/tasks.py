@@ -21,6 +21,10 @@ from . import config
 from .toolkit import describe_call, tool
 
 
+_BUILDING = re.compile(r"\b(build|create|make|generate|write|develop|code)\b.{0,80}\b(game|app|project|"
+                       r"script|program|website|tool|bot|platformer|site)\b", re.I | re.S)
+
+
 @dataclass
 class Task:
     id: int
@@ -65,6 +69,10 @@ def _save_report(task: Task) -> Path | None:
     return None
 
 
+def _made_files(task: Task) -> bool:
+    return "write_file" in task.brain.tools_used
+
+
 def _run(task: Task):
     from .brain import Brain
 
@@ -78,10 +86,20 @@ def _run(task: Task):
     task.brain = Brain(confirm=ask, background=True)
     try:
         task.result = task.brain.chat(task.goal, on_tool=on_tool)
+        if _BUILDING.search(task.goal) and task.brain.outcome == "done" and not _made_files(task):
+            # it described the work instead of doing it: hold it to the real thing, once
+            task.result = task.brain.chat(
+                "No files were created, so nothing was built. Do it now: create the real files "
+                "with write_file, run them, then report.", on_tool=on_tool)
+            if not _made_files(task):
+                task.brain.outcome = "no_files"
+                task.result = "Nothing was built: no files were created."
         task.status = {"done": "done", "stopped": "stopped"}.get(task.brain.outcome, "failed")
     except Exception as e:
         task.result, task.status = f"The task hit an error: {e}", "failed"
     task.finished = time.time()
+    if task.status == "failed" and task.brain and "write_file" in task.brain.tools_used:
+        task.result += f"\n\nPartial work is in {config.WORKSPACE}."
     if task.status == "done":
         task.report = _save_report(task)
     if _on_done and task.status != "stopped":

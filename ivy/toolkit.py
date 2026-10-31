@@ -143,7 +143,7 @@ _VERBS = {
     "find_files": "🔎 Finding files", "search_in_files": "🔎 Searching files",
     "browser_open": "🌐 Ivy's browser", "browser_read": "🌐 Reading the page",
     "browser_click": "🌐 Clicking", "browser_type": "🌐 Typing", "browser_select": "🌐 Choosing",
-    "start_task": "⏳ Background task", "list_tasks": "⏳ Tasks", "cancel_task": "⏳ Cancelling task",
+    "launch_program": "🚀 Starting", "start_task": "⏳ Background task", "list_tasks": "⏳ Tasks", "cancel_task": "⏳ Cancelling task",
     "read_context": "👁 Reading what's in front", "reply_email": "✉️ Reply",
     "install_package": "📦 Installing", "uninstall_package": "📦 Uninstalling", "use_tools": "🧰 Unlocking",
 }

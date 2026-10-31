@@ -7,6 +7,7 @@ import math
 import operator
 import re
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -25,6 +26,21 @@ _HTTP.headers["User-Agent"] = "Mozilla/5.0 (Macintosh) IVY-1/1.0"
 
 def _sh(cmd: list[str], timeout: float = 30, **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
+
+
+def workspace() -> Path:
+    config.WORKSPACE.mkdir(parents=True, exist_ok=True)
+    return config.WORKSPACE
+
+
+def resolve_path(path: str) -> Path:
+    """Relative paths mean Ivy's working folder, not wherever the app happened to start."""
+    p = Path(path).expanduser()
+    return p if p.is_absolute() else workspace() / p
+
+
+def in_workspace(path: str) -> bool:
+    return workspace().resolve() in (resolve_path(path).resolve(), *resolve_path(path).resolve().parents)
 
 
 def _osa(script: str, timeout: float = 15) -> str:
@@ -435,9 +451,9 @@ def list_installed_apps() -> str:
 
 @tool(confirm="shell", timeout=60, command="zsh command line")
 def run_shell(command: str) -> str:
-    """Run a shell command on this Mac and return its output. Use for anything the
-    other tools don't cover (git, file ops, system queries, scripts)."""
-    r = _sh(["/bin/zsh", "-lc", command], timeout=55)
+    """Run a shell command on this Mac and return its output; it's stopped after 55 s.
+    Starts in Ivy's working folder. Use for anything other tools don't cover."""
+    r = _sh(["/bin/zsh", "-lc", command], timeout=55, cwd=str(workspace()))
     out = ((r.stdout or "") + (r.stderr or "")).strip() or "(no output)"
     return out if r.returncode == 0 else f"exit {r.returncode}\n{out}"
 
@@ -451,17 +467,37 @@ def run_python(code: str) -> str:
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
         f.write(code)
     try:
-        r = _sh([sys.executable, f.name], timeout=120, cwd=str(Path.home()))
+        r = _sh([sys.executable, f.name], timeout=120, cwd=str(workspace()))
     finally:
         Path(f.name).unlink(missing_ok=True)
     out = ((r.stdout or "") + (r.stderr or "")).strip() or "(no output)"
     return out if r.returncode == 0 else f"exit {r.returncode}\n{out}"
 
 
-@tool(group="files", path="Directory, '~' allowed")
-def list_files(path: str = "~") -> str:
+@tool(timeout=20, command="zsh command, e.g. 'python3 main.py'", folder="Folder to run it in")
+def launch_program(command: str, folder: str = "") -> str:
+    """Start something that keeps running on its own (a game, app or server) and check it survived
+    the first seconds. If it crashes, returns the error output."""
+    cwd = resolve_path(folder) if folder else workspace()
+    if not cwd.is_dir():
+        return f"NOT DONE: there's no folder {cwd}."
+    log = Path(tempfile.gettempdir()) / f"ivy_program_{int(time.time())}.log"
+    with open(log, "w") as out:
+        proc = subprocess.Popen(["/bin/zsh", "-lc", command], cwd=str(cwd), stdout=out,
+                                stderr=subprocess.STDOUT, start_new_session=True)
+    for _ in range(12):
+        if proc.poll() is not None:
+            break
+        time.sleep(0.25)
+    if proc.poll() is None:
+        return f"Running (process {proc.pid}), from {cwd}."
+    return f"It stopped straight away (exit {proc.returncode}):\n{log.read_text()[-1500:]}"
+
+
+@tool(group="files", path="Directory, '~' allowed; relative means the working folder")
+def list_files(path: str = "") -> str:
     """List files in a directory."""
-    p = Path(path).expanduser()
+    p = resolve_path(path)
     items = sorted(p.iterdir(), key=lambda i: (not i.is_dir(), i.name.lower()))
     shown = [f"{'📁' if i.is_dir() else '📄'} {i.name}" for i in items if not i.name.startswith(".")]
     return "\n".join(shown[:100]) or "(empty)"
@@ -470,7 +506,7 @@ def list_files(path: str = "~") -> str:
 @tool(group="files", path="File path, '~' allowed", start_line="First line to show, for long files")
 def read_file(path: str, start_line: int = 1) -> str:
     """Read a text file with line numbers (about 150 lines at a time)."""
-    lines = Path(path).expanduser().read_text(errors="replace").splitlines()
+    lines = resolve_path(path).read_text(errors="replace").splitlines()
     start = max(1, start_line)
     shown = lines[start - 1:start + 149]
     out = "\n".join(f"{i:5} {line[:200]}" for i, line in enumerate(shown, start))
@@ -481,8 +517,8 @@ def read_file(path: str, start_line: int = 1) -> str:
 
 @tool(group="files", confirm="action", path="File to create or replace")
 def write_file(path: str, content: str) -> str:
-    """Create a file, or replace its whole contents."""
-    p = Path(path).expanduser()
+    """Create a file, or replace its whole contents. Relative paths go in Ivy's working folder."""
+    p = resolve_path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content)
     return f"Wrote {len(content)} chars to {p} (read back {p.stat().st_size} bytes)."
@@ -492,7 +528,7 @@ def write_file(path: str, content: str) -> str:
       new="Replacement text")
 def edit_file(path: str, old: str, new: str) -> str:
     """Change part of a file by exact text replacement. Read the file first."""
-    p = Path(path).expanduser()
+    p = resolve_path(path)
     text = p.read_text()
     count = text.count(old)
     if count != 1:

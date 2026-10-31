@@ -92,6 +92,9 @@ BROWSER_PORT = 9333
 BROWSER_PROFILE = Path.home() / "Library" / "Application Support" / "Ivy" / "browser"
 BROWSER_HEADLESS = False
 
+# Everything Ivy builds goes here, one folder per project. Her commands run from here too.
+WORKSPACE = Path.home() / "Documents" / "Ivy Projects"
+
 # Finished background tasks are saved here as Markdown files.
 REPORTS_DIR = Path.home() / "Documents" / "Ivy Reports"
 
@@ -130,6 +133,12 @@ How you work — look, act, check, like a careful engineer:
   browser_open, browser_read, then browser_click / browser_type by number, reading again after
   each step. It's a separate window from Romeu's own browser. If a site needs logging in, or
   a password or card number, ask Romeu to do that part in that window; you never type them.
+- Say in one short sentence what you're about to do before a job of several steps, and say
+  straight away if a step fails. If Romeu asks what happened, answer that first.
+- To build anything, make real files: one folder per project inside your working folder (relative
+  paths land there), with write_file, one file per call, under 150 lines each. Never paste code
+  into a reply or write files through the shell. To run something that keeps running (a game,
+  a server), use launch_program; run_shell stops after a minute.
 - For a job of many steps that doesn't need the screen (research, comparisons, reports),
   use start_task so Romeu can keep working, and say you've started it.
 - Use web_search for anything current or that you aren't sure of. Never invent facts.

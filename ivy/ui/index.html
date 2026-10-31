@@ -378,7 +378,6 @@ function showTyping() {
 
 function setBusy(on) {
   document.body.classList.toggle('busy', on);
-  inputEl.disabled = on;
   if (on) { setState('thinking'); showTyping(); }
 }
 
@@ -499,6 +498,7 @@ async function send(textArg) {
   const text = (textArg || inputEl.value).trim();
   if (!text) return;
   inputEl.value = '';
+  window._currentEl = null;     // she may be mid-sentence: this message interrupts her
   const sug = document.getElementById('suggestions');
   if (sug) sug.remove();
   addMsg('user', text);

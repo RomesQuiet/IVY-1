@@ -36,6 +36,9 @@ BUGS = [
     ("passwords get typed", "ivy/browser.py", "if _SENSITIVE_FIELD.search(about):", "if False:"),
     ("purchases don't ask", "ivy/brain.py", "guarded = guarded or bool(risk)", "pass"),
     ("local files can be opened", "ivy/browser.py", 'if "://" in url or', 'if False and'),
+    ("retry storm after a 429", "ivy/router.py", "e.blocked_until = e.seen_at = time.time() + wait", "e.seen_at = time.time() + wait"),
+    ("replies don't reach the chat", "ivy/brain.py", "        if on_token:\n            on_token(reply)\n", ""),
+    ("a build task needs no files", "ivy/tasks.py", "and not _made_files(task):\n            # it described", "and False:\n            # it described"),
     ("page function renamed", "ivy/ui/index.html", "window.toolDone =", "window.toolFinished ="),
 ]
 

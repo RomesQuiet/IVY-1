@@ -26,11 +26,12 @@ from openai import APIConnectionError, APIError, APIStatusError, RateLimitError
 from . import browser, config, context, intents, learning, senses, toolkit
 from . import tools as _tools  # noqa: F401  (registers every tool)
 from .memory import get_store
+from .tools import in_workspace
 from .router import classify, get_pool
 
 MAX_TOOL_ROUNDS = 15
 MAX_HISTORY_MESSAGES = 24             # user + assistant lines (~12 exchanges)
-MAX_REPLY_TOKENS = 1024          # gpt-oss spends part of this on hidden reasoning
+MAX_REPLY_TOKENS = 2000          # gpt-oss spends part of this on hidden reasoning; a file needs room
 REPLY_RESERVE = 300              # what a typical reply adds to a request's cost
 REQUEST_BUDGET = 6800            # stay under the 8k-per-request cap with margin
 MAX_WAIT = 45                    # seconds Ivy will wait out a rate limit
@@ -51,7 +52,7 @@ _UI_TOOLS = {"click_text", "click_at", "click_element", "type_text", "press_key"
 _HARMLESS_WRITES = {"create_note", "add_reminder"}      # no guard: nothing runs or leaves the Mac
 # Romeu is using the Mac while a task runs, so it can't take over the screen or the sound.
 _NOT_IN_BACKGROUND = _UI_TOOLS | {
-    "start_task", "activate_app", "open_app", "open_url", "browse", "quit_app", "play_youtube",
+    "start_task", "launch_program", "activate_app", "open_app", "open_url", "browse", "quit_app", "play_youtube",
     "play_music", "media_control", "set_volume", "system_toggle", "power", "read_screen",
     "see_screen", "wait_for_text", "run_js_browser", "list_ui_elements",
     "browser_open", "browser_read"}
@@ -66,12 +67,20 @@ Research rules, which matter more than a complete-looking report:
 - Every specific number, date, price, spec or name must come from a tool result in this task,
   and the report must name the source. Never fill a gap from your own memory.
 - If you couldn't verify something, write "not verified" rather than guessing, and leave it
-  out of any table. Finish by listing your sources."""
+  out of any table. Finish by listing your sources.
+
+Build rules, if the job is to make something:
+- A report full of code is not a result. Create the real files with write_file, one per call,
+  in a new folder inside your working folder. Small files: a file over 150 lines won't fit.
+- Run what you built and fix it until it works. Run games without a window:
+  SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 5 python3 main.py
+- Coloured squares aren't art. If you use placeholders, say so plainly.
+- The final message is short: the folder, how to start it, what you tested, what's unfinished."""
 
 _SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
 _ENDS_WITH_PUNCT = re.compile(r'[.!?]$')
 _VALIDATION_ERRORS = ("tool call validation failed", "tool_use_failed", "failed to call a function",
-                      "parsing failed")
+                      "parsing failed", "failed to parse tool call")
 
 
 foreground_busy = threading.Event()     # set while Romeu is waiting on a reply
@@ -82,6 +91,10 @@ class Stopped(Exception):
 
 
 class OutOfQuota(Exception):
+    pass
+
+
+class TooLarge(Exception):
     pass
 
 
@@ -127,6 +140,7 @@ class Brain:
         self.max_wait = 300 if background else MAX_WAIT
         self.max_reply = 2500 if background else MAX_REPLY_TOKENS
         self.outcome = ""              # done, stopped, out_of_quota or gave_up
+        self.request_budget = REQUEST_BUDGET
         self.confirm = confirm or (_console_confirm if sys.stdin.isatty() else None)
         self.actions_approved = False
         self.vision_approved = False
@@ -136,6 +150,7 @@ class Brain:
         self._cancel = threading.Event()
         self.on_learned = None         # called with each new lesson's text
         self._turn = {"request": "", "did": []}
+        self.tools_used: set[str] = set()
         self._notes: list[str] = []    # things to add to the conversation before the next turn
         self.learner: threading.Thread | None = None
         self.messages = [{"role": "system", "content": self._build_system_prompt()}]
@@ -149,6 +164,7 @@ class Brain:
         prompt = f"{config.SYSTEM_PROMPT}\nRight now it is {now}."
         if self.background:
             prompt += _BACKGROUND_PROMPT
+        prompt += f"\nYour working folder is {config.WORKSPACE}."
         if self._state:
             prompt += f"\n\nLive reading of the Mac, taken just now:\n{senses.summary(self._state)}"
         mems = get_store().recent(20)
@@ -192,7 +208,7 @@ class Brain:
     def _fit(self, groups: set, turn_start: int) -> list:
         """Shrink the request until it fits one call. Returns the tool schemas to send."""
         tools = self._schemas(groups)
-        if _estimate(self.messages, tools) <= REQUEST_BUDGET:
+        if _estimate(self.messages, tools) <= self.request_budget:
             return tools
         # 1) only the newest reasoning is needed; on long jobs the rest piles up
         with_reasoning = [m for m in self.messages if m.get("reasoning")]
@@ -201,23 +217,29 @@ class Brain:
         # 2) shorten this turn's tool results, oldest first; the newest stay whole
         results = [m for m in self.messages[turn_start:] if m.get("role") == "tool"]
         for limit in (1200, 400, 150):
-            if _estimate(self.messages, tools) <= REQUEST_BUDGET:
+            if _estimate(self.messages, tools) <= self.request_budget:
                 return tools
             for m in results[:-2]:
                 if len(m["content"]) > limit:
                     m["content"] = m["content"][:limit] + " …(trimmed to fit)"
-        # 3) drop older conversation, oldest first
-        while _estimate(self.messages, tools) > REQUEST_BUDGET and turn_start > 2:
+        # 3) files already written don't need their full contents re-sent every round
+        calls = [m for m in self.messages[turn_start:] if m.get("tool_calls")]
+        for m in calls[:-1]:
+            for c in m["tool_calls"]:
+                if len(c["function"]["arguments"]) > 600:
+                    c["function"]["arguments"] = '{"_note": "long arguments trimmed to fit"}'
+        # 4) drop older conversation, oldest first
+        while _estimate(self.messages, tools) > self.request_budget and turn_start > 2:
             del self.messages[1]
             turn_start -= 1
             while self.messages[1].get("role") == "tool" or self.messages[1].get("tool_calls"):
                 del self.messages[1]
                 turn_start -= 1
-        # 4) send only the core tools
-        if _estimate(self.messages, tools) > REQUEST_BUDGET:
+        # 5) send only the core tools
+        if _estimate(self.messages, tools) > self.request_budget:
             tools = self._schemas(set())
-        # 5) last resort: shorten every tool result in this turn hard
-        if _estimate(self.messages, tools) > REQUEST_BUDGET:
+        # 6) last resort: shorten every tool result in this turn hard
+        if _estimate(self.messages, tools) > self.request_budget:
             for m in self.messages[turn_start:]:
                 if m.get("role") == "tool":
                     m["content"] = m["content"][:300]
@@ -243,6 +265,8 @@ class Brain:
 
         # A web page, email or screen can contain text aimed at Ivy ("now run this…").
         # Once she has read any, pre-approvals don't count for anything powerful.
+        if t.name in ("write_file", "edit_file") and in_workspace(args.get("path", "")):
+            return True     # her own project folder: nothing else on the Mac is touched
         guarded = self._tainted and t.name not in _UI_TOOLS and t.name not in _HARMLESS_WRITES
         # Buying, deleting or sending for real is never covered by an earlier OK.
         risk = browser.click_risk(args) if t.name == "browser_click" else None
@@ -297,7 +321,7 @@ class Brain:
         need = _estimate(self.messages, tools)
         if self.background:
             # leave room so a request Romeu makes doesn't have to wait for this task
-            need = min(need + 1500, REQUEST_BUDGET + 800)
+            need = min(need + 1500, self.request_budget + 800)
         tried, waited, announced = set(), 0.0, False
         while True:
             if self._cancel.is_set():
@@ -341,8 +365,11 @@ class Brain:
                 if any(v in text for v in _VALIDATION_ERRORS):
                     raise
                 if err.status_code == 413 or "request too large" in text:
-                    tried.add(id(e))       # this model's cap is too small; try a bigger one
-                    continue
+                    # code has more tokens per character than our estimate assumes
+                    if self.request_budget <= 2500:
+                        raise OutOfQuota("That request is too big for the free tier even after trimming.")
+                    self.request_budget -= 1500
+                    raise TooLarge()
                 pool.bench(e, 300 if err.status_code >= 500 else 3600,
                            f"unavailable ({err.status_code})")
             except APIConnectionError:
@@ -354,13 +381,27 @@ class Brain:
 
     def chat(self, user_input, **callbacks):
         """Answer one request. Background tasks pause while this runs for Romeu."""
-        if self.background:
-            return self._chat(user_input, **callbacks)
-        foreground_busy.set()
+        if not self.background:
+            foreground_busy.set()
         try:
             return self._chat(user_input, **callbacks)
+        except Exception as e:
+            # keep it in the conversation, so "what failed?" gets a true answer
+            self.add_note(f"(That request failed with this error: {e})")
+            raise
         finally:
-            foreground_busy.clear()
+            if not self.background:
+                foreground_busy.clear()
+
+    def _finish(self, reply: str, on_token, on_sentence) -> str:
+        """End a turn that didn't come from the model. It must still reach Romeu's screen
+        and the conversation, or Ivy just seems to go silent."""
+        self.messages.append({"role": "assistant", "content": reply})
+        if on_token:
+            on_token(reply)
+        if on_sentence:
+            on_sentence(reply)
+        return reply
 
     def add_note(self, text: str):
         """Put something in the conversation before the next turn, e.g. a finished task."""
@@ -460,6 +501,8 @@ class Brain:
                                 slot["name"] = tc.function.name
                             if tc.function and tc.function.arguments:
                                 slot["arguments"] += tc.function.arguments
+                except TooLarge:
+                    continue
                 except RateLimitError as err:
                     if e:   # hit the limit mid-stream: note it and redo the round elsewhere
                         get_pool().rate_limited(e, str(err))
@@ -471,10 +514,11 @@ class Brain:
                     if "rate limit" in text.lower() and e:
                         get_pool().rate_limited(e, text)
                         continue
-                    if any(v in text.lower() for v in _VALIDATION_ERRORS) and nudges < 2:
+                    if any(v in text.lower() for v in _VALIDATION_ERRORS) and nudges < 4:
                         nudges += 1
                         bad = re.search(r"call tool '([^']+)'", text)
                         hint = (f"There is no '{bad.group(1)}' tool. " if bad else "") + \
+                            "If your arguments were long they were cut off: write a smaller file. " \
                             "Only call tools listed in this request (web_search to look things up, " \
                             "run_python to compute, use_tools to unlock more), with valid JSON arguments."
                         self.messages.append({"role": "system", "content": "Your last tool call failed. " + hint})
@@ -518,16 +562,17 @@ class Brain:
 
             self._carry_groups = set()
             self.outcome = "gave_up"
-            return "I went round in circles on that one — could you put it another way?"
+            return self._finish("I went round in circles on that one — could you put it another way?",
+                                on_token, on_sentence)
 
         except Stopped:
             self.outcome = "stopped"
             self._drop_open_turn(turn_start)
-            return "Stopped."
+            return self._finish("Stopped.", on_token, None)
         except OutOfQuota as err:
             self.outcome = "out_of_quota"
             self._drop_open_turn(turn_start)
-            return self._quota_message(str(err))
+            return self._finish(self._quota_message(str(err)), on_token, on_sentence)
 
     def _start_learning(self, said: str):
         """Corrections are studied in the background so the reply isn't held up."""
@@ -611,6 +656,7 @@ class Brain:
             limit = PER_TOOL_LIMIT.get(c["name"], DEFAULT_TOOL_LIMIT)
             counts[c["name"]] = counts.get(c["name"], 0) + 1
             self._turn["did"].append(c["name"])
+            self.tools_used.add(c["name"])
             if counts[c["name"]] > limit:
                 results[c["id"]] = (f"Stop: {c['name']} was already called {limit} times for this "
                                     "request. Answer with what you have, or use a different tool.")

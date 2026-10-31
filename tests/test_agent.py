@@ -131,13 +131,19 @@ class RateLimits(AgentCase):
         reply = self.brain().chat("tell me something interesting about the sea", on_status=status.append)
         self.assertEqual(reply, "Worth the wait.")
 
-    def test_413_is_not_treated_as_a_dead_model(self):
-        # this benched both models for twenty minutes in the screenshot
-        small = FakeModel([api_error(413, "Request too large for model: Limit 8000, Requested 9079")])
-        other = FakeModel([say("Fine.")])
-        pool = fake_pool(main=small, fast=other)
-        self.assertEqual(self.brain().chat("tell me something interesting about the sea"), "Fine.")
-        self.assertEqual(pool.endpoints[1].benched_until if pool.endpoints[1].model == "fake/main" else pool.endpoints[0].benched_until, 0.0)
+    def test_413_shrinks_the_request_and_retries(self):
+        # this benched both models for twenty minutes, then killed a build with tokens free
+        model = FakeModel([api_error(413, "Request too large for model: Limit 8000, Requested 9079"), say("Fine.")])
+        pool = fake_pool(main=model)
+        b = self.brain()
+        self.assertEqual(b.chat("tell me something interesting about the sea"), "Fine.")
+        self.assertEqual(pool.endpoints[0].benched_until, 0.0)
+        self.assertLess(b.request_budget, 6800)
+
+    def test_endless_413_ends_politely(self):
+        model = FakeModel([api_error(413, "Request too large") for _ in range(6)])
+        fake_pool(main=model)
+        self.assertIn("too big", self.brain().chat("tell me something interesting about the sea"))
 
     def test_missing_model_falls_through(self):
         # qwen3.6 vanished from Groq and every medium request failed
@@ -573,3 +579,109 @@ class BackgroundTasks(AgentCase):
             self.assertEqual(intents.match(text), ("start_task", {"goal": goal}), text)
         self.assertEqual(intents.match("what are you working on")[0], "list_tasks")
         self.assertEqual(intents.match("cancel the task")[0], "cancel_task")
+
+
+class FailuresFromRealUse(AgentCase):
+    """Each of these came from a real session: 'build a platformer' then 'open it and run it'."""
+
+    def tearDown(self):
+        tasks.configure()
+        tasks._tasks.clear()
+        super().tearDown()
+
+    def test_no_retry_storm_after_a_429(self):
+        # Groq counted more than our estimate, so the budget said "go" and ~10 requests a second failed
+        import ivy.brain as brain_module
+        saved = brain_module.MAX_WAIT
+        brain_module.MAX_WAIT = 1
+        try:
+            limited = api_error(429, "Limit 8000, Used 7000, Requested 9000. Please try again in 30s.")
+            model = FakeModel([limited] * 50)
+            fake_pool(main=model)
+            self.brain().chat("tell me something interesting about the sea")
+            self.assertEqual(len(model.requests), 1)
+        finally:
+            brain_module.MAX_WAIT = saved
+
+    def test_quota_reply_reaches_the_chat_and_history(self):
+        # "I'm out of quota" only went to the log, so she seemed to ignore "talk to me"
+        import ivy.brain as brain_module
+        saved = brain_module.MAX_WAIT
+        brain_module.MAX_WAIT = 1
+        try:
+            model = FakeModel([api_error(429, "Requested 1000. Please try again in 90s.")])
+            fake_pool(main=model)
+            shown = []
+            b = self.brain()
+            reply = b.chat("tell me something interesting about the sea", on_token=shown.append)
+            self.assertEqual("".join(shown), reply)
+            self.assertEqual(b.messages[-1], {"role": "assistant", "content": reply})
+        finally:
+            brain_module.MAX_WAIT = saved
+
+    def test_stopped_reaches_the_chat(self):
+        import dataclasses
+        b = self.brain()
+        toolkit.TOOLS["calculate"] = dataclasses.replace(toolkit.TOOLS["calculate"], fn=lambda **k: b.cancel() or "1")
+        model = FakeModel([call("calculate", expression="1")])
+        fake_pool(main=model, fast=model)
+        shown = []
+        b.chat("please calculate something big", on_token=shown.append)
+        self.assertEqual(shown, ["Stopped."])
+
+    def test_cut_off_tool_call_is_recovered(self):
+        model = FakeModel([[stream_error("Failed to parse tool call arguments as JSON")], say("Writing a smaller file.")])
+        fake_pool(main=model)
+        self.assertEqual(self.brain().chat("tell me something interesting about the sea"), "Writing a smaller file.")
+        self.assertIn("cut off", model.requests[1]["messages"][-1]["content"])
+
+    def test_a_crash_is_remembered_for_what_failed(self):
+        model = FakeModel([stream_error("the server exploded"), say("It crashed.")])
+        fake_pool(main=model)
+        b = self.brain()
+        with self.assertRaises(Exception):
+            b.chat("tell me something interesting about the sea")
+        b.chat("what failed, would you tell me please")
+        text = " ".join(str(m.get("content")) for m in model.requests[-1]["messages"])
+        self.assertIn("the server exploded", text)
+
+    def test_writing_project_files_needs_no_dialog_but_elsewhere_does(self):
+        b = self.brain(lambda title, detail: False)
+        write = toolkit.TOOLS["write_file"]
+        self.assertTrue(b._allowed(write, {"path": "game/main.py"}))
+        self.assertTrue(b._allowed(write, {"path": str(config.WORKSPACE / "game/main.py")}))
+        self.assertFalse(b._allowed(write, {"path": "~/.zshrc"}))
+        self.assertFalse(b._allowed(write, {"path": "../../escape.txt"}))
+
+    def test_build_task_with_no_files_gets_held_to_it(self):
+        # the "finished" platformer was only a report with code in it
+        model = FakeModel([say("Here is all the code: ..."), call("write_file", path="demo/main.py", content="print(1)"),
+                           say("Built it in demo/.")], remaining=8000)
+        fake_pool(main=model, fast=model)
+        task = tasks.start("build a small game in pygame")
+        while task.status in ("queued", "running"):
+            time.sleep(0.02)
+        self.assertEqual((task.status, task.result), ("done", "Built it in demo/."))
+        self.assertTrue((config.WORKSPACE / "demo/main.py").exists())
+
+    def test_build_task_that_never_builds_is_a_failure(self):
+        model = FakeModel([say("Here is the code."), say("Still just code.")], remaining=8000)
+        fake_pool(main=model, fast=model)
+        task = tasks.start("build a small game in pygame")
+        while task.status in ("queued", "running"):
+            time.sleep(0.02)
+        self.assertEqual((task.status, task.report), ("failed", None))
+
+    def test_written_files_stop_costing_tokens(self):
+        import json
+        self.stub("write_file", "Wrote it.")
+        big = "x = 1\n" * 900
+        steps = [call("write_file", path=f"g/f{i}.py", content=big) for i in range(5)] + [say("Done.")]
+        model = FakeModel(steps, remaining=8000)
+        fake_pool(main=model, fast=model)
+        self.brain().chat("please write out these project files for me")
+        self.assertLess(len(json.dumps(model.requests[-1]["messages"])) // 5, 5500)
+
+    def test_commands_start_in_the_workspace(self):
+        from ivy import tools
+        self.assertEqual(tools.resolve_path("g/a.py"), config.WORKSPACE / "g/a.py")

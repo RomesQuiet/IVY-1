@@ -124,6 +124,7 @@ class Endpoint:
     extra: dict               # provider-specific request params
     remaining: int | None = None
     seen_at: float = 0.0      # when `remaining` was true (in the future right after a 429)
+    blocked_until: float = 0.0   # Groq said "try again in Xs": no request before then
     benched_until: float = 0.0
     bench_reason: str = ""
 
@@ -135,13 +136,16 @@ class Endpoint:
     def budget(self, now: float) -> int:
         """Tokens available now. Groq refills continuously (8000/min ≈ 133 per second),
         so the allowance grows from the last reading instead of resetting all at once."""
+        if now < self.blocked_until:
+            return 0
         if self.remaining is None:
             return self.tpm
         return min(self.tpm, int(self.remaining + (now - self.seen_at) * self.tpm / 60))
 
     def wait_for(self, need: int, now: float) -> float:
-        """Seconds until `need` tokens have refilled."""
-        return max(0.0, (need - self.budget(now)) * 60 / self.tpm)
+        """Seconds until `need` tokens have refilled, and any block from Groq has passed."""
+        start = max(now, self.blocked_until)
+        return start - now + max(0.0, (need - self.budget(start)) * 60 / self.tpm)
 
 
 TIER_ORDER = {
@@ -205,7 +209,9 @@ class ModelPool:
         # Groq says this request fits in `wait` seconds, so that's when the budget equals it.
         requested = re.search(r"Requested (\d+)", message)
         e.remaining = int(requested.group(1)) if requested else e.tpm // 2
-        e.seen_at = time.time() + wait
+        # Our estimate can be lower than what Groq counts, so a calculated budget alone could
+        # say "go" straight away. Retrying inside this window only wastes daily requests.
+        e.blocked_until = e.seen_at = time.time() + wait
         if wait > 120:   # daily quota, not the per-minute one
             self.bench(e, wait, "daily limit reached")
         else:

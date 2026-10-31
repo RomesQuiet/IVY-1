@@ -80,6 +80,18 @@ class Tools(unittest.TestCase):
         self.assertIn("Cleared", toolkit.run("forget_all", {}))
         self.assertEqual(get_store().all(), [])
 
+    def test_launch_program_keeps_running_or_reports_the_crash(self):
+        import tests.support as support
+        support._ALLOWED_COMMANDS.add("zsh")
+        try:
+            running = toolkit.run("launch_program", {"command": "sleep 4"})
+            self.assertIn("Running", running)
+            crashed = toolkit.run("launch_program", {"command": "echo boom; exit 3"})
+            self.assertIn("boom", crashed)
+            self.assertIn("exit 3", crashed)
+        finally:
+            support._ALLOWED_COMMANDS.discard("zsh")
+
     def test_applescript_quoting(self):
         self.assertEqual(tools._as_str('a"b\\c'), '"a\\"b\\\\c"')
 
@@ -140,6 +152,13 @@ class Router(unittest.TestCase):
         endpoint, wait, why = pool.pick("medium", 3000)
         self.assertGreater(wait, 0)
         self.assertEqual(why, "budget")
+
+    def test_nothing_goes_out_while_blocked_even_if_our_estimate_is_low(self):
+        e = self.endpoint()
+        pool = router.ModelPool.__new__(router.ModelPool)
+        pool.endpoints = [e]
+        pool.rate_limited(e, "Limit 8000, Requested 7900. Please try again in 5s.")
+        self.assertGreater(pool.pick("medium", 100)[1], 4)
 
     def test_daily_limit_benches(self):
         pool = router.ModelPool.__new__(router.ModelPool)

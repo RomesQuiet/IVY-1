@@ -107,6 +107,12 @@ as numbered buttons, links and fields. Log in there to the sites you want her to
 see your everyday browser. She never types passwords or card numbers, and anything that buys,
 deletes or sends asks you every time.
 
+## Projects
+
+Whatever Ivy builds goes in `~/Documents/Ivy Projects`, and her commands run from there. A task
+asked to build something only counts as done if real files exist. Sending a new message
+while she's working interrupts her.
+
 ## Background tasks
 
 Say "research standing desks in the background" and keep working. One task runs at a time,

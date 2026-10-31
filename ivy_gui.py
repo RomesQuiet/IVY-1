@@ -373,6 +373,8 @@ class IvyApp:
     def send(self, text: str):
         if not text or not text.strip():
             return {"ok": False}
+        if self.brain and self._chat_lock.locked():
+            self.brain.cancel()         # a new message takes over from whatever she's doing
         threading.Thread(
             target=self._do_chat, args=(text.strip(), False), daemon=True
         ).start()
