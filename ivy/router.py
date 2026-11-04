@@ -33,6 +33,9 @@ _SIGNALS = [
     (r"\bimplications?\b", 2),
 
     # --- strong simple signals ---
+    # --- a follow-up needs thought, however short it is ---
+    (r"^\s*(why|how come|how so|what do you mean|explain|talk to me|what happened|are you sure)\b", 2),
+
     (r"^\s*(hi|hey|hello|yo|sup|howdy)\b", -5),
     (r"^\s*(thanks|thank you|thx|ty|cheers)\b", -5),
     (r"^\s*good (morning|afternoon|evening|night)\b", -5),
@@ -72,7 +75,7 @@ def _score(text: str) -> int:
     elif len(words) > 18:
         s += 1
     elif len(words) <= 4:
-        s -= 3
+        s -= 2
 
     if t.count("?") >= 2:
         s += 2
@@ -90,6 +93,34 @@ def classify(text: str) -> str:
     if s <= -3:
         return "simple"
     return "medium"
+
+
+@dataclass(frozen=True)
+class Route:
+    """How much of everything one request gets. Every request takes the same steps; these
+    set the depth: the model, how hard it thinks, and the rules and context it's given."""
+    level: str          # also the model chain in TIER_ORDER
+    chain: str
+    effort: str         # reasoning_effort
+    max_reply: int      # thinking counts towards this
+    history: int | None     # earlier messages to send; None = all
+    memories: int
+
+
+ROUTES = {
+    "quick":   Route("quick", "simple", "low", 400, 4, 0),
+    "simple":  Route("simple", "simple", "low", 900, 8, 8),
+    "medium":  Route("medium", "medium", "medium", 2000, None, 20),
+    "complex": Route("complex", "complex", "high", 3000, None, 20),
+}
+
+
+def route(text: str, known_command: bool = False) -> Route:
+    if known_command:
+        return ROUTES["quick"]
+    level = classify(text)
+    # "open X, then do Y, and so on" starts like a command but isn't one
+    return ROUTES["medium" if level == "simple" and len(text.split()) > 12 else level]
 
 
 def parse_duration(text: str) -> float:
@@ -127,6 +158,11 @@ class Endpoint:
     blocked_until: float = 0.0   # Groq said "try again in Xs": no request before then
     benched_until: float = 0.0
     bench_reason: str = ""
+
+    @property
+    def thinks(self) -> bool:
+        """Does it take reasoning_effort? Only gpt-oss on Groq has been checked."""
+        return self.provider == "groq" and "gpt-oss" in self.model
 
     @property
     def name(self) -> str:

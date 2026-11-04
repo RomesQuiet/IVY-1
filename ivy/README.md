@@ -4,8 +4,8 @@ A voice-and-text assistant for macOS that works like a coding agent on your whol
 it looks, acts, then checks what actually happened.
 
 ```
-you ──▶ intents.py ──(instant: open, play, volume, timers, weather, time)──▶ done in ms, 0 tokens
-          │ not a simple command
+you ──▶ router.py + intents.py  every request gets a route: model, thinking effort, rules, context
+          │ open an app: one tool, a few lines, low effort   build a project: everything, high effort
           ▼
         senses.py  live reading of the Mac: front app, window, tab, music, volume
           ▼

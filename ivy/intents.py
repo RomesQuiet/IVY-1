@@ -1,16 +1,16 @@
 # ivy/intents.py
 """
-Instant commands: the everyday requests Ivy can do without asking the LLM.
+Recognises everyday commands, so the router can give them the shortest route.
 
-They answer in milliseconds, cost no tokens (so they never hit Groq's limits),
-and work even while every model is rate-limited. Anything ambiguous, compound
-("… and then …") or conversational returns None and goes to the agent.
+Ivy still thinks and decides, but with very little to read, so these cost a fraction of a
+normal request. If every model is out of quota, the command runs directly. Anything
+ambiguous, compound ("… and then …") or conversational returns None.
 """
 
 import datetime
 import re
 
-from . import learning, toolkit
+from . import learning
 from .tools import resolve_app
 
 _FILLER = re.compile(
@@ -182,20 +182,18 @@ def match(text: str) -> tuple[str, dict] | tuple[None, str] | None:
     return None
 
 
-_FAILED = re.compile(r"^(?:\w+ failed:|unknown tool|missing required|no \w+ (?:results|matches))", re.I)
+FAILED = re.compile(r"^(?:\w+ failed:|unknown tool|missing required|no \w+ (?:results|matches)|not done|"
+                    r"could(?:n't| not)|can't|.*\bnot found\b)", re.I)
 
 
-def run(text: str):
-    """Try the instant path → (reply, tool_name, args, raw_result) or None."""
-    hit = match(text)
-    if not hit:
-        return None
-    name, payload = hit
-    if name is None:
-        return payload, None, {}, payload
-    if learning.applies(name, text):
-        return None     # something Romeu taught her may change this: the agent knows it
-    result = toolkit.run(name, payload)
-    if _FAILED.search(result):
-        return None     # let the agent work it out (it can try other routes)
-    return result, name, payload, result
+def hint(text: str) -> tuple[str, dict] | tuple[None, str] | None:
+    """What this probably is → (tool_name, args), (None, known answer) or None. Ivy still decides."""
+    asked = about_ivy(text)
+    if asked == "status":
+        return "my_status", {}
+    if asked:
+        return "switch_model", {"choice": {"fast": "lightest", "main": "heaviest", "auto": "automatic"}[asked]}
+    found = match(text)
+    if found and found[0] and learning.applies(found[0], text):
+        return None     # something Romeu taught her may change this: she needs the full picture
+    return found

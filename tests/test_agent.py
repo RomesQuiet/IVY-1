@@ -1,5 +1,6 @@
 """The agent loop, against a scripted model: no network, no tokens."""
 
+import json
 import threading
 import time
 import unittest
@@ -7,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tests.support import api_error, call, calls, fake_pool, FakeModel, ROOT, say, stream_error
-from ivy import config, context, intents, learning, safety, senses, tasks, toolkit
+from ivy import config, context, intents, learning, router, safety, senses, tasks, toolkit
 from ivy.memory import get_store
 from ivy.brain import Brain
 
@@ -278,13 +279,21 @@ class SafetyGuard(AgentCase):
 
 
 class InstantCommands(AgentCase):
-    def test_no_model_is_called(self):
-        model = FakeModel([])
+    def test_a_command_is_decided_by_the_model_in_one_cheap_call(self):
+        model = FakeModel([call("open_app", name="safari")])
         fake_pool(main=model, fast=model)
         self.stub("open_app", "Opened Safari.")
-        reply = self.brain().chat("open safari")
-        self.assertEqual(reply, "Opened Safari.")
-        self.assertEqual(model.requests, [])
+        self.assertEqual(self.brain().chat("open safari"), "Opened Safari.")
+        self.assertEqual(len(model.requests), 1)
+        sent = model.requests[0]
+        self.assertEqual([t["function"]["name"] for t in sent["tools"] if t["function"]["name"] != "use_tools"], ["open_app"])
+        self.assertEqual(sent["max_tokens"], 400)
+
+    def test_every_model_out_of_quota_still_does_the_command(self):
+        model = FakeModel([api_error(429, "Rate limit reached. Please try again in 9m")] * 2)
+        fake_pool(main=model, fast=model)
+        self.stub("open_app", "Opened Safari.")
+        self.assertEqual(self.brain().chat("open safari"), "Opened Safari.")
 
     def test_a_failed_instant_command_goes_to_the_agent(self):
         def boom(**kw):
@@ -435,12 +444,13 @@ class Learning(AgentCase):
         self.assertEqual(self.ran, [])
         self.assertIn("prefers YouTube", model.requests[0]["messages"][0]["content"])
 
-    def test_unrelated_lessons_keep_commands_instant(self):
+    def test_unrelated_lessons_keep_commands_quick(self):
         get_store().add("Romeu prefers metric units.", ["learned"])
         self.stub("open_app", "Opened Safari.")
-        model = FakeModel([])
+        model = FakeModel([call("open_app", name="safari")])
         fake_pool(main=model, fast=model)
         self.assertEqual(self.brain().chat("open safari"), "Opened Safari.")
+        self.assertEqual(model.requests[0]["max_tokens"], 400)
 
 
 class BackgroundTasks(AgentCase):
@@ -698,22 +708,19 @@ class KnowsHerself(AgentCase):
         brain = self.brain()
         return brain, brain.chat(text), model
 
-    def test_usage_questions_use_real_numbers_and_no_model(self):
+    def test_usage_questions_go_through_her_with_the_real_tool(self):
         for text in ("just tell me what\u2019s your usage on the groq\u2019s models", "what's your usage", "what model are you using?",
                      "can I switch models?"):
-            brain, reply, model = self.ask(text)
-            self.assertEqual(model.requests, [], text)
+            brain, reply, model = self.ask(text, call("my_status"))
+            self.assertEqual(len(model.requests), 1, text)
             self.assertIn("fast for simple requests", reply)
-            self.assertIn("main for the rest", reply)
             self.assertIn("/model", reply)
 
     def test_switching(self):
-        for text, want in (("switch yourself to your lightest model", "fake/fast"), ("then switch to the heaviest", "fake/main")):
-            brain, reply, model = self.ask(text)
+        for text, choice, want in (("switch yourself to your lightest model", "lightest", "fake/fast"),
+                                   ("then switch to the heaviest", "heaviest", "fake/main")):
+            brain, reply, model = self.ask(text, call("switch_model", choice=choice))
             self.assertEqual(brain.force_model, want)
-            self.assertEqual(model.requests, [])
-        brain.chat("use automatic")
-        self.assertIsNone(brain.force_model)
 
     def test_wordings_from_real_use_switch(self):
         for text, want in (("switch to your lightest model please", "fast"), ("use the lightest one for now", "fast"), ("go to a heavier model", "main"),
@@ -771,6 +778,114 @@ class KnowsHerself(AgentCase):
     def test_prompt_and_tool_are_available_every_request(self):
         self.assertIn("my_status", config.SYSTEM_PROMPT)
         self.assertEqual(toolkit.TOOLS["my_status"].group, "core")
+
+
+class ThinkingProcedure(AgentCase):
+    """Same steps for everything; the depth scales. An app barely thinks, a build thinks hard."""
+
+    def sent(self, text, *steps):
+        model = FakeModel(list(steps))
+        pool = fake_pool(main=model, fast=model)
+        for e in pool.endpoints:
+            e.model = "openai/gpt-oss-" + e.tier
+        self.brain().chat(text)
+        return model.requests
+
+    def size(self, request):
+        return len(json.dumps(request["messages"])) + len(json.dumps(request["tools"]))
+
+    def test_the_cost_scales_with_the_task(self):
+        self.stub("open_app", "Opened Safari.")
+        quick = self.sent("open safari", call("open_app", name="safari"))[0]
+        big = self.sent("build a complete platformer game in python with ten levels and explain the architecture in detail", say("Planning it."))[0]
+        self.assertEqual((quick["reasoning_effort"], big["reasoning_effort"]), ("low", "high"))
+        self.assertLess(self.size(quick) * 5, self.size(big))
+        self.assertLess(quick["max_tokens"], big["max_tokens"])
+
+    def test_everything_goes_through_the_model(self):
+        for text in ("what time is it", "hi", "thanks"):
+            self.assertEqual(len(self.sent(text, say("Sure."))), 1, text)
+
+    def test_she_is_given_the_possibilities(self):
+        for word in ("Answer:", "Do it:", "Say, then do:", "Plan:", "Ask:", "Decline:"):
+            self.assertIn(word, config.SYSTEM_PROMPT)
+
+    def test_follow_ups_get_real_thought(self):
+        for text in ("Why?", "why? talk to me!", "what do you mean"):
+            self.assertEqual(router.classify(text), "medium", text)
+
+    def test_a_wrong_guess_can_unlock_everything(self):
+        requests = self.sent("open safari", call("use_tools", groups="files"), say("Which discussion?"))
+        self.assertLess(len(requests[0]["tools"]), 3)
+        self.assertGreater(len(requests[1]["tools"]), 5)
+
+    def test_models_without_the_setting_dont_get_it(self):
+        model = FakeModel([say("Hi.")])
+        fake_pool(main=model, fast=model)
+        self.brain().chat("hello there")
+        self.assertNotIn("reasoning_effort", model.requests[0])
+
+    def test_thinking_away_the_whole_reply_never_ends_silently(self):
+        requests = self.sent("hello there", say(""), say("Hi."))
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[1]["reasoning_effort"], "low")
+
+    def test_the_small_model_never_gets_high_effort(self):
+        model = FakeModel([say("Planning it.")])
+        pool = fake_pool(fast=model)
+        pool.endpoints[0].model = "openai/gpt-oss-fast"
+        self.brain().chat("build a complete platformer game in python with ten levels and explain the architecture in detail")
+        self.assertEqual(model.requests[0]["reasoning_effort"], "medium")
+
+    def test_long_chains_that_start_like_commands_get_thought(self):
+        text = "Open Google, search for Google, go to the link of the first result, search for Google, and so on."
+        self.assertEqual(router.route(text).level, "medium")
+
+    def test_a_failed_command_goes_back_to_her(self):
+        self.stub("open_app", "open_app failed: nope")
+        requests = self.sent("open safari", call("open_app", name="safari"), say("Safari wouldn't open."))
+        self.assertEqual(len(requests), 2)
+
+
+class Refusals(AgentCase):
+    """'I'm sorry, but I can't help with that.' four times, with no reason given."""
+
+    REFUSAL = "I’m sorry, but I can’t help with that."
+
+    def test_she_thinks_again_and_romeu_never_sees_the_refusal(self):
+        shown, model = [], FakeModel([say(self.REFUSAL), say("I'll do ten rounds, then stop.")])
+        fake_pool(main=model, fast=model)
+        reply = self.brain().chat("Open Google and search for Google and so on", on_token=shown.append)
+        self.assertEqual(reply, "I'll do ten rounds, then stop.")
+        self.assertNotIn(self.REFUSAL, "".join(shown))
+        self.assertEqual(model.requests[1]["max_tokens"], 3000)
+        self.assertIn("bare refusal", json.dumps(model.requests[1]["messages"]))
+
+    def test_a_refusal_never_enters_the_conversation(self):
+        model = FakeModel([say(self.REFUSAL), say("Here's why I hesitated.")])
+        fake_pool(main=model, fast=model)
+        brain = self.brain()
+        brain.chat("do something odd")
+        self.assertNotIn(self.REFUSAL, json.dumps(brain.messages, ensure_ascii=False))
+
+    def test_it_stops_retrying_and_says_so(self):
+        model = FakeModel([say(self.REFUSAL)] * 3)
+        fake_pool(main=model, fast=model)
+        self.assertIn("keeps refusing", self.brain().chat("do something odd"))
+        self.assertEqual(len(model.requests), 3)
+
+    def test_a_reasoned_decline_reaches_romeu(self):
+        reply = "I'm sorry, but I can't do that, because it would send your password to a stranger's site, which could lose you the account. I can open the real login page instead."
+        model = FakeModel([say(reply)])
+        fake_pool(main=model, fast=model)
+        self.assertEqual(self.brain().chat("post my password on that site"), reply)
+        self.assertEqual(len(model.requests), 1)
+
+    def test_the_reasoning_is_kept_for_diagnosis(self):
+        model = FakeModel([say(self.REFUSAL), say("Fine.")])
+        fake_pool(main=model, fast=model)
+        self.brain().chat("do something odd")
+        self.assertIn('"kind": "refusal"', Path(config.ACTION_LOG).read_text())
 
 
 class Recovery(AgentCase):

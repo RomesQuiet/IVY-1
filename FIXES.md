@@ -24,6 +24,11 @@ Status as of 2026-10-31. Run `python -m tests.run` to check.
 | 9 | Back up | Fixes before this file are on `origin/main`; this work still needs committing. Decide whether `pixel_mario/` stays. |
 | 10 | Real-use checks | Not done: needs Romeu. A real install through Ivy, real sites in her browser, Mail and selection on real data. |
 
+## Thinking procedure (2026-11-01)
+Every request now goes through the AI, with depth set by the route. See `CLAUDE.md`. Real runs with
+tools replaced by stand-ins: "open safari" 432 in + 36 out, one call. "Why is the sky blue?" about
+2,300 in total. A pong build used about 2,700 in + 2,000 out on its first call alone.
+
 ## Known limits
 - `brew`, `pip` and `npm` uninstalls can't be restored from the holding folder; they can only be reinstalled.
 - Scripts run by `run_python` can still delete files once approved, except in `/Applications`.

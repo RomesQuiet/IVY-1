@@ -2,10 +2,13 @@
 """
 The agent.
 
-1. Instant path (intents.py): everyday commands run locally — no LLM, no tokens.
-2. Agent path: observe, act, verify. The model starts from a live reading of the Mac,
-   and every action comes back with what actually changed ("[Observed: …]"), so it
-   works from what happened instead of what it expected to happen.
+Every request takes the same steps: the router picks a route (model and how hard to
+think), Ivy gets rules and context sized to that route, she thinks and decides what to
+do, then she observes, acts and verifies. Opening an app and building a project differ
+only in depth: a recognised command gets a few lines and one tool, so it barely thinks.
+
+The model starts from a live reading of the Mac, and every action comes back with what
+actually changed ("[Observed: …]"), so it works from what happened, not what it expected.
 
 Groq's free tier caps each model at 8k tokens per minute, and that's also the
 largest single request. So every round is sized to fit, the pool picks a model
@@ -13,6 +16,7 @@ that still has budget, short limits are waited out instead of failing, and a
 loop guard stops the model from repeating itself.
 """
 
+import dataclasses
 import datetime
 import json
 import re
@@ -27,11 +31,10 @@ from . import actionlog, browser, config, context, intents, learning, safety, se
 from . import tools as _tools  # noqa: F401  (registers every tool)
 from .memory import get_store
 from .tools import in_workspace
-from .router import classify, get_pool
+from .router import ROUTES, get_pool, route as choose_route
 
 MAX_TOOL_ROUNDS = 15
 MAX_HISTORY_MESSAGES = 24             # user + assistant lines (~12 exchanges)
-MAX_REPLY_TOKENS = 2000          # gpt-oss spends part of this on hidden reasoning; a file needs room
 REPLY_RESERVE = 300              # what a typical reply adds to a request's cost
 REQUEST_BUDGET = 6800            # stay under the 8k-per-request cap with margin
 MAX_WAIT = 45                    # seconds Ivy will wait out a rate limit
@@ -100,10 +103,59 @@ class OutOfQuota(Exception):
 
 
 _THINKING = re.compile(r"(?s)<think>.*?</think>\s*|^.*?</think>\s*|<think>.*$")
+_REFUSAL = re.compile(r"\s*(?:I['’]?m sorry|I am sorry|sorry)[,.]?(?: but)? I (?:can['’]?t|cannot|won['’]?t)\b|\s*I (?:can['’]?t|cannot) (?:help|assist)\b", re.I)
+_REFUSAL_LENGTH = 160            # longer than this and she has explained herself
+_HOLD = 48                       # characters to see before a reply can't be a refusal
+_MAX_REFUSALS = 2
+_RETHINK = ("Your last reply was a bare refusal, and Romeu didn't see it. Think again about what he "
+            "actually asked. If it's only long, repetitive or odd, do it with a sensible limit and say "
+            "the limit. If it would really cause harm, say why in your own words and offer what you can do.")
+_OUT_OF_ROOM = ("You used all your room on thinking and nothing reached Romeu. Stop planning. "
+                "Say one line about what you're doing and take the first step now.")
+_OBSERVED_LINE = re.compile(r"\s*\[Observed:.*$", re.S)
 
 
 class TooLarge(Exception):
     pass
+
+
+class _Output:
+    """Sends a reply out as it streams. The start is held until it can't be a refusal, and a
+    reply that might be one, or that may hold raw thinking, is only released when complete."""
+
+    def __init__(self, on_token, on_sentence, hold_all):
+        self.on_token, self.on_sentence = on_token, on_sentence
+        self.text, self.buffer = "", ""
+        self.hold_all, self.flowing = hold_all, False
+
+    def _send(self, text):
+        if self.on_token:
+            self.on_token(text)
+        if self.on_sentence:
+            self.buffer += text
+            done, self.buffer = _split_sentences(self.buffer)
+            for s in done:
+                if len(s.strip()) >= 3:
+                    self.on_sentence(s.strip())
+
+    def add(self, text):
+        self.text += text
+        if self.flowing:
+            self._send(text)
+        elif not self.hold_all and len(self.text) >= _HOLD:
+            self.hold_all = bool(_REFUSAL.match(self.text))
+            if not self.hold_all:
+                self.flowing = True
+                self._send(self.text)
+
+    def finish(self):
+        if not self.flowing and self.text:
+            self.text = _THINKING.sub("", self.text).strip()
+            self._send(self.text)
+        if self.on_sentence and self.buffer.strip():
+            self.on_sentence(self.buffer.strip())
+        self.buffer = ""
+        return self.text
 
 
 def _split_sentences(text: str):
@@ -146,7 +198,7 @@ class Brain:
         self.denied = _NOT_IN_BACKGROUND if background else frozenset()
         self.max_rounds = 25 if background else MAX_TOOL_ROUNDS
         self.max_wait = 300 if background else MAX_WAIT
-        self.max_reply = 2500 if background else MAX_REPLY_TOKENS
+        self.max_reply = 2500 if background else None     # None: the route decides
         self.outcome = ""              # done, stopped, out_of_quota or gave_up
         self.request_budget = REQUEST_BUDGET
         self.confirm = confirm or (_console_confirm if sys.stdin.isatty() else None)
@@ -161,14 +213,20 @@ class Brain:
         self.tools_used: set[str] = set()
         self._notes: list[str] = []    # things to add to the conversation before the next turn
         self.learner: threading.Thread | None = None
+        self._route = ROUTES["medium"]
+        self._only: str | None = None   # on a quick route, the one tool she's offered
         self.messages = [{"role": "system", "content": self._build_system_prompt()}]
 
     # -----------------------------------------------------------------
     # Prompt & history
     # -----------------------------------------------------------------
 
-    def _build_system_prompt(self, groups=()):
+    def _build_system_prompt(self, groups=(), hint=None):
         now = datetime.datetime.now().strftime("%A, %d %B %Y, %H:%M")
+        if self._route.level == "quick":
+            known = (f"Known answer: {hint[1]}" if hint[0] is None else
+                     f"Likely action: {hint[0]} {json.dumps(hint[1], ensure_ascii=False)}")
+            return f"{config.QUICK_PROMPT}\nRight now it is {now}.\n{known}"
         prompt = f"{config.SYSTEM_PROMPT}\nRight now it is {now}."
         if self.background:
             prompt += _BACKGROUND_PROMPT
@@ -178,7 +236,7 @@ class Brain:
         prompt += f"\nYour working folder is {config.WORKSPACE}."
         if self._state:
             prompt += f"\n\nLive reading of the Mac, taken just now:\n{senses.summary(self._state)}"
-        mems = get_store().recent(20)
+        mems = get_store().recent(self._route.memories)
         if mems:
             lines = "\n".join(f"- [{m['id']}] {m['text']}" for m in mems)
             prompt += f"\n\nWhat you remember about Romeu (treat as known facts):\n{lines}"
@@ -214,6 +272,8 @@ class Brain:
 
     def _schemas(self, groups) -> list:
         tools = toolkit.schemas(groups)
+        if self._route.level == "quick":
+            tools = [s for s in tools if s["function"]["name"] in (self._only, "use_tools")]
         return [s for s in tools if s["function"]["name"] not in self.denied] if self.denied else tools
 
     def _fit(self, groups: set, turn_start: int) -> list:
@@ -309,20 +369,12 @@ class Brain:
             self.actions_approved = True
         return ok
 
-    def _about_me(self, text: str):
-        """Answer questions about her models from the real pool, or switch them."""
-        asked = intents.about_ivy(text)
-        if not asked:
-            return None
-        reply = get_pool().report() if asked == "status" else self._switch(asked)
-        return reply, None, {}, reply
-
     def _switch(self, choice: str) -> str:
         pool = get_pool()
-        if choice in ("auto", "automatic"):
+        if choice == "automatic":
             self.force_model = pool.forced = None
             return "Back on automatic."
-        chosen = pool.tier_model({"lightest": "fast", "heaviest": "main"}.get(choice, choice))
+        chosen = pool.tier_model({"lightest": "fast", "heaviest": "main"}.get(choice, ""))
         if not chosen:
             return f"I don't have a {choice} model set up."
         self.force_model = pool.forced = chosen.model
@@ -367,10 +419,23 @@ class Brain:
         if self._cancel.wait(seconds):
             raise Stopped()
 
-    def _open_stream(self, difficulty, tools, on_status, on_sentence):
+    def _effort(self, e) -> str:
+        """The small model can think its whole reply away on high effort."""
+        return "medium" if e.tier == "fast" and self._route.effort == "high" else self._route.effort
+
+    def _request_messages(self, turn_start: int) -> list:
+        """The conversation this route gets: a quick command doesn't need all of it."""
+        keep = self._route.history
+        if keep is None:
+            return self.messages
+        return self.messages[:1] + self.messages[max(1, turn_start - keep):]
+
+    def _open_stream(self, turn_start, tools, on_status, on_sentence):
         """Open a streaming completion on the best endpoint with budget for it."""
         pool = get_pool()
-        need = _estimate(self.messages, tools)
+        route = self._route
+        messages = self._request_messages(turn_start)
+        need = _estimate(messages, tools)
         if self.background:
             # leave room so a request Romeu makes doesn't have to wait for this task
             need = min(need + 1500, self.request_budget + 800)
@@ -381,7 +446,7 @@ class Brain:
             while self.background and foreground_busy.is_set():
                 self._sleep(0.5)
             pool.forced = self.force_model
-            e, wait, why = pool.pick(difficulty, need, self.force_model, skip=tried)
+            e, wait, why = pool.pick(route.chain, need, self.force_model, skip=tried)
             if e is None:
                 if why == "too_big":
                     raise OutOfQuota("That request is too big for the free tier even after trimming.")
@@ -401,14 +466,15 @@ class Brain:
                 self._stream_began, self._stream_waited = time.monotonic(), waited
                 raw = e.client.chat.completions.with_raw_response.create(
                     model=e.model,
-                    messages=self.messages,
+                    messages=messages,
                     tools=tools,
                     tool_choice="auto",
                     temperature=0.6,
-                    max_tokens=self.max_reply,
+                    max_tokens=self.max_reply or route.max_reply,
                     stream=True,
                     stream_options={"include_usage": True},
                     **e.extra,
+                    **({"reasoning_effort": self._effort(e)} if e.thinks else {}),
                 )
                 pool.update_from_headers(e, raw.headers)
                 pool.last = e.name
@@ -475,31 +541,17 @@ class Brain:
         self._notes = []
         self._trim_history()
 
-        # ---- 1. instant path ----
+        # ---- route: what this is, and how much thought and context it gets ----
         try:
-            instant = self._about_me(user_input) or intents.run(user_input)
+            hint = intents.hint(user_input)
         except Exception as e:
-            print(f"  (instant command failed: {e})")
-            instant = None
-        if instant:
-            reply, name, args, result = instant
-            if name:
-                self._turn["did"].append(name)
-            if name and on_tool:
-                on_tool(name, args)
-            if name and on_tool_result:
-                on_tool_result(name, args, result)
-            if on_token:
-                on_token(reply)
-            if on_sentence:
-                on_sentence(reply)
-            if on_status:
-                on_status("⚡ instant — no model needed")
-            self.messages += [{"role": "user", "content": user_input},
-                              {"role": "assistant", "content": reply}]
-            return reply
+            print(f"  (couldn't recognise the command: {e})")
+            hint = None
+        if hint and hint[0] in self.denied:
+            hint = None
+        self._route = choose_route(user_input, known_command=bool(hint))
+        self._only = hint[0] if hint else None
 
-        # ---- 2. agent path ----
         try:
             self._state = senses.snapshot(budget=0.4)
         except Exception as e:
@@ -508,28 +560,33 @@ class Brain:
         self.messages.append({"role": "user", "content": user_input + self._context_for(
             user_input, on_tool, on_tool_result)})
         turn_start = len(self.messages) - 1
-        difficulty = classify(user_input)
         groups = toolkit.groups_for(user_input) | self._carry_groups
         if self.background:
             groups |= {"web", "files"}   # a task can't stop to ask for better tools
-        self.messages[0] = {"role": "system", "content": self._build_system_prompt(groups)}
+        self.messages[0] = {"role": "system", "content": self._build_system_prompt(groups, hint)}
         seen: dict[str, str] = {}            # call signature → result (loop guard)
         counts: dict[str, int] = {}
-        nudges = 0
+        nudges = refusals = 0
+        emptied = False
+        offered = set(groups)
 
         try:
             for _round in range(self.max_rounds):
+                if self._route.level == "quick" and groups != offered:
+                    # it wasn't the quick command it looked like: give her everything
+                    self._route = ROUTES["medium"]
+                    self.messages[0] = {"role": "system", "content": self._build_system_prompt(groups)}
                 tools = self._fit(groups, turn_start)
                 turn_start = next(i for i in range(len(self.messages) - 1, 0, -1)
                                   if self.messages[i].get("role") == "user")
-                content, reasoning, calls, usage = "", "", {}, None
-                sentence_buffer = ""
+                reasoning, calls, usage = "", {}, None
+                output = None
                 e = None
                 try:
-                    e, stream = self._open_stream(difficulty, tools, on_status, on_sentence)
+                    e, stream = self._open_stream(turn_start, tools, on_status, on_sentence)
                     if on_status and _round == 0:
-                        on_status(f"🎯 {difficulty} → {e.name}")
-                    held = e.tier == "backup"     # it writes its thinking into the reply
+                        on_status(f"🎯 {self._route.level} → {e.name}, {self._route.effort} thinking")
+                    output = _Output(on_token, on_sentence, hold_all=e.tier == "backup")   # it writes its thinking into the reply
                     for chunk in stream:
                         if self._cancel.is_set():
                             stream.close()
@@ -541,15 +598,7 @@ class Brain:
                         delta = chunk.choices[0].delta
                         reasoning += getattr(delta, "reasoning", None) or ""
                         if delta.content:
-                            content += delta.content
-                            if on_token and not held:
-                                on_token(delta.content)
-                            if on_sentence and not held:
-                                sentence_buffer += delta.content
-                                done, sentence_buffer = _split_sentences(sentence_buffer)
-                                for s in done:
-                                    if len(s.strip()) >= 3:
-                                        on_sentence(s.strip())
+                            output.add(delta.content)
                         for tc in getattr(delta, "tool_calls", None) or []:
                             slot = calls.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
                             if tc.id:
@@ -584,20 +633,29 @@ class Brain:
 
                 actionlog.record("model", e.model, ms=round((time.monotonic() - self._stream_began) * 1000),
                                  waited=round(self._stream_waited), tokens=usage.total_tokens if usage else None)
-                if held:
-                    content = _THINKING.sub("", content).strip()
-                    if not calls:
-                        if on_token and content:
-                            on_token(content)
-                        if on_sentence and content:
-                            on_sentence(content)
-                if on_sentence and sentence_buffer.strip() and not calls:
-                    on_sentence(sentence_buffer.strip())
                 if usage:
                     get_pool().record_usage(e, usage.prompt_tokens + usage.completion_tokens)
                 if usage and on_status:
                     on_status(f"📊 {e.name}  {usage.prompt_tokens} in + {usage.completion_tokens} out")
 
+                content = output.text
+                refused = not calls and bool(_REFUSAL.match(content)) and len(content) < _REFUSAL_LENGTH
+                if refused:
+                    actionlog.record("refusal", e.model, text=content, reasoning=reasoning[-600:])
+                    if refusals < _MAX_REFUSALS:
+                        refusals += 1
+                        self._route = ROUTES["complex"]
+                        self.messages[0] = {"role": "system", "content": self._build_system_prompt(groups)}
+                        self.messages.append({"role": "system", "content": _RETHINK})
+                        continue
+                    return self._finish("The model keeps refusing that without giving a reason, so I'm stuck. "
+                                        "Try putting it another way.", on_token, on_sentence)
+                content = output.finish()
+                if not calls and not content and not emptied:
+                    emptied = True
+                    self._route = dataclasses.replace(self._route, effort="low")
+                    self.messages.append({"role": "system", "content": _OUT_OF_ROOM})
+                    continue
                 if not calls:
                     self.messages.append({"role": "assistant", "content": content})
                     self._carry_groups = groups - {"memory", "skills"}
@@ -627,6 +685,13 @@ class Brain:
                                           "content": results[c["id"]]})
                 if self._cancel.is_set():
                     raise Stopped()
+                done = self._quick_result(ordered, results)
+                if done:
+                    self._carry_groups = set()
+                    if content:
+                        self.messages.append({"role": "assistant", "content": content})
+                        return content
+                    return self._finish(done, on_token, on_sentence)
 
             self._carry_groups = set()
             self.outcome = "gave_up"
@@ -640,7 +705,30 @@ class Brain:
         except OutOfQuota as err:
             self.outcome = "out_of_quota"
             self._drop_open_turn(turn_start)
+            if hint and not self._turn["did"]:
+                return self._finish(self._run_hint(hint, on_tool, on_tool_result), on_token, on_sentence)
             return self._finish(self._quota_message(str(err)), on_token, on_sentence)
+
+    def _quick_result(self, calls, results) -> str | None:
+        """A quick command that worked needs no second model call: her decision is made and
+        the result says what happened. Anything else goes back to her to think about."""
+        if self._route.level != "quick" or len(calls) != 1 or calls[0]["name"] != self._only:
+            return None
+        result = results[calls[0]["id"]]
+        return None if intents.FAILED.search(result) else _OBSERVED_LINE.sub("", result)
+
+    def _run_hint(self, hint, on_tool, on_tool_result) -> str:
+        """Every model is out of quota, but a recognised command can still be done."""
+        name, payload = hint
+        if name is None:
+            return payload
+        self._turn["did"].append(name)
+        if on_tool:
+            on_tool(name, payload)
+        result = self._run_tool(name, payload)
+        if on_tool_result:
+            on_tool_result(name, payload, result)
+        return result
 
     def _start_learning(self, said: str):
         """Corrections are studied in the background so the reply isn't held up."""
@@ -687,7 +775,7 @@ class Brain:
         print(f"  ⛔ {detail}")
         if "internet" in detail or "too big" in detail:
             return detail
-        return ("I'm out of free model quota for the moment, so only instant commands work "
+        return ("I'm out of free model quota for the moment, so only simple commands work "
                 "(open, play, volume, timers, weather). Try again in a minute — or add a free "
                 "Cerebras or OpenRouter key in .env to give me more room.")
 
