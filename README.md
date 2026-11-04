@@ -38,7 +38,8 @@ Opening an app costs under 500 tokens. Building a project gets the strongest rou
 
 - macOS (developed on macOS 13, Intel)
 - Python 3.11
-- A [Groq](https://groq.com) API key
+- A [Cloudflare](https://cloudflare.com) account with Workers AI, for her thinking
+- A [Groq](https://groq.com) API key, for voice, vision and deep web search
 
 ## Setup
 
@@ -94,4 +95,11 @@ throwaway copy to prove the tests catch them, and takes about twenty minutes.
 
 ## Limits
 
-Groq's free plan allows 8,000 tokens per minute per model, so long tasks sometimes wait.
+Ivy thinks with Cloudflare Workers AI: gemma 4 26b for quick requests and gpt-oss-120b for real
+thinking. Its free plan has 10,000 neurons a day, reset at midnight UTC, and after that only simple
+commands work. Groq is still needed for voice transcription, screen vision and deep web search.
+
+```
+CLOUDFLARE_ACCOUNT_ID=your_account_id
+CLOUDFLARE_API_TOKEN=your_token
+```

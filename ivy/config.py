@@ -64,6 +64,11 @@ MODEL_VISION = "qwen/qwen3.8-27b"        # Ivy's eyes: ~1.8k tokens and ~3 s per
 # .env. More providers = more tokens per minute before Ivy has to wait.
 #   CEREBRAS_API_KEY   — free tier at cloud.cerebras.ai (fast gpt-oss-120b)
 #   OPENROUTER_API_KEY — free models at openrouter.ai
+#   CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID — Workers AI, 10,000 free neurons a day
+# Which of these Ivy thinks with, in order. Romeu chose Cloudflare only (2026-11-04). Groq still
+# does voice transcription, see_screen and deep_web_search, which call it directly.
+CHAT_PROVIDERS = ("cloudflare",)
+CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
 PROVIDERS = [
     {
         "name": "groq", "key_env": "GROQ_API_KEY", "base_url": GROQ_BASE_URL, "tpm": 8000,
@@ -77,6 +82,13 @@ PROVIDERS = [
     {
         "name": "openrouter", "key_env": "OPENROUTER_API_KEY", "base_url": "https://openrouter.ai/api/v1",
         "tpm": 20000, "models": {"main": os.getenv("OPENROUTER_MODEL", "openai/gpt-oss-120b:free")},
+    },
+    {
+        # Its limit is neurons per day, not tokens per minute; running out benches it until midnight UTC.
+        # gemma 4 26b passed real tool-call tests (2026-11-04) and costs about a third of gpt-oss-120b.
+        "name": "cloudflare", "key_env": "CLOUDFLARE_API_TOKEN", "needs": "CLOUDFLARE_ACCOUNT_ID",
+        "base_url": f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1",
+        "tpm": 60000, "models": {"main": "@cf/openai/gpt-oss-120b", "fast": os.getenv("CLOUDFLARE_FAST_MODEL", "@cf/google/gemma-4-26b-a4b-it")},
     },
 ]
 

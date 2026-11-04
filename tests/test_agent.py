@@ -888,6 +888,70 @@ class Refusals(AgentCase):
         self.assertIn('"kind": "refusal"', Path(config.ACTION_LOG).read_text())
 
 
+class Cloudflare(AgentCase):
+    """A no-card fallback for when Groq runs out. Groq is always tried first."""
+
+    def pool(self):
+        from ivy import router
+        groq, cf = FakeModel([say("From Groq.")]), FakeModel([say("From Cloudflare.")])
+        pool = fake_pool(main=groq, fast=groq)
+        pool.endpoints.append(router.Endpoint("cloudflare", "@cf/openai/gpt-oss-120b", "main", cf, 60000, {}))
+        return pool, groq, cf
+
+    def test_groq_comes_first(self):
+        pool, groq, cf = self.pool()
+        self.assertEqual(self.brain().chat("explain gravity please"), "From Groq.")
+        self.assertEqual(cf.requests, [])
+
+    def test_it_takes_over_when_groq_runs_out(self):
+        pool, groq, cf = self.pool()
+        for e in pool.endpoints[:2]:
+            e.blocked_until = time.time() + 600
+        self.assertEqual(self.brain().chat("explain gravity please"), "From Cloudflare.")
+
+    def test_used_up_neurons_bench_it_until_midnight_utc(self):
+        pool, groq, cf = self.pool()
+        e = pool.endpoints[-1]
+        pool.rate_limited(e, "4006: you have used up your daily free allocation of 10,000 neurons")
+        self.assertAlmostEqual(e.benched_until, time.time() + router.until_utc_midnight(), delta=5)
+
+    def test_it_needs_both_values(self):
+        import os
+        saved = {k: os.environ.pop(k, None) for k in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID")}
+        try:
+            os.environ["CLOUDFLARE_API_TOKEN"] = "x"
+            names = [p["name"] for p in config.PROVIDERS if os.getenv(p["key_env"]) and not (p.get("needs") and not os.getenv(p["needs"]))]
+            self.assertNotIn("cloudflare", names)
+            with self.assertRaises(RuntimeError):     # no other provider does the thinking
+                router.ModelPool()
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_ivy_thinks_with_cloudflare_only(self):
+        import os
+        saved = {k: os.environ.get(k) for k in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "GROQ_API_KEY")}
+        os.environ.update(CLOUDFLARE_API_TOKEN="x", CLOUDFLARE_ACCOUNT_ID="y", GROQ_API_KEY="z")
+        try:
+            self.assertEqual({e.provider for e in router.ModelPool().endpoints}, {"cloudflare"})
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_gpt_oss_there_gets_thinking_effort_and_gemma_doesnt(self):
+        from ivy import router
+        self.assertTrue(router.Endpoint("cloudflare", "@cf/openai/gpt-oss-120b", "main", None, 1, {}).thinks)
+        self.assertFalse(router.Endpoint("cloudflare", "@cf/google/gemma-4-26b-a4b-it", "fast", None, 1, {}).thinks)
+
+    def test_names_read_well(self):
+        pool, groq, cf = self.pool()
+        self.assertEqual(pool.endpoints[-1].name, "cloudflare:gpt-oss-120b")
+
+
 class Recovery(AgentCase):
     """Whatever slips past the checks has to be recoverable and on the record."""
 

@@ -455,7 +455,7 @@ class Brain:
                 if waited + wait > self.max_wait:
                     raise OutOfQuota(pool.status())
                 if on_status:
-                    on_status(f"⏳ Waiting {wait:.0f}s for the Groq rate limit…")
+                    on_status(f"⏳ Waiting {wait:.0f}s for {e.name}'s rate limit…")
                 if on_sentence and not announced and wait > 4:
                     on_sentence("One moment.")
                     announced = True
@@ -775,9 +775,11 @@ class Brain:
         print(f"  ⛔ {detail}")
         if "internet" in detail or "too big" in detail:
             return detail
+        if "daily" in detail:
+            return ("I've used up today's free model allowance, so only simple commands work "
+                    "(open, play, volume, timers, weather) until it resets at midnight UTC.")
         return ("I'm out of free model quota for the moment, so only simple commands work "
-                "(open, play, volume, timers, weather). Try again in a minute — or add a free "
-                "Cerebras or OpenRouter key in .env to give me more room.")
+                "(open, play, volume, timers, weather). Try again in a minute.")
 
     def _execute_calls(self, calls, groups, seen, counts, on_tool, on_sentence, on_tool_result) -> dict:
         """Run one round of tool calls. Safe tools run in parallel; anything that

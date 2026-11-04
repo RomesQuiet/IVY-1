@@ -136,6 +136,11 @@ def parse_duration(text: str) -> float:
     return total
 
 
+def until_utc_midnight(now: float | None = None) -> float:
+    now = time.time() if now is None else now
+    return 86400 - now % 86400
+
+
 def parse_retry_seconds(error_message: str) -> float:
     m = re.search(r"try again in ([\dhms.]+)", error_message)
     return parse_duration(m.group(1)) + 1 if m else 30.0
@@ -161,12 +166,12 @@ class Endpoint:
 
     @property
     def thinks(self) -> bool:
-        """Does it take reasoning_effort? Only gpt-oss on Groq has been checked."""
-        return self.provider == "groq" and "gpt-oss" in self.model
+        """Does it take reasoning_effort? Checked for gpt-oss on Groq and Cloudflare."""
+        return self.provider in ("groq", "cloudflare") and "gpt-oss" in self.model
 
     @property
     def name(self) -> str:
-        short = self.model.split("/")[-1]
+        short = self.model.split("/")[-1].removeprefix("@cf/")
         return short if self.provider == "groq" else f"{self.provider}:{short}"
 
     def budget(self, now: float) -> int:
@@ -199,9 +204,10 @@ class ModelPool:
     def __init__(self):
         from openai import OpenAI
         self.endpoints: list[Endpoint] = []
-        for p in config.PROVIDERS:
+        for p in sorted((p for p in config.PROVIDERS if p["name"] in config.CHAT_PROVIDERS),
+                        key=lambda p: config.CHAT_PROVIDERS.index(p["name"])):
             key = os.getenv(p["key_env"])
-            if not key:
+            if not key or (p.get("needs") and not os.getenv(p["needs"])):
                 continue
             client = OpenAI(base_url=p["base_url"], api_key=key, timeout=60, max_retries=0)
             for tier, model in p["models"].items():
@@ -209,7 +215,8 @@ class ModelPool:
                     self.endpoints.append(Endpoint(p["name"], model, tier, client,
                                                    p.get("tpm", 8000), p.get("extra", {})))
         if not self.endpoints:
-            raise RuntimeError("No LLM provider configured — add GROQ_API_KEY to .env")
+            raise RuntimeError(f"No chat provider configured for {', '.join(config.CHAT_PROVIDERS)}: "
+                               "add its keys to .env")
 
     # ---- choosing ----
 
@@ -245,6 +252,9 @@ class ModelPool:
             pass
 
     def rate_limited(self, e: Endpoint, message: str):
+        if e.provider == "cloudflare" and re.search(r"neuron|daily|allocation|quota", message, re.I):
+            self.bench(e, until_utc_midnight(), "daily neurons used up")
+            return
         wait = parse_retry_seconds(message)
         # Groq says this request fits in `wait` seconds, so that's when the budget equals it.
         requested = re.search(r"Requested (\d+)", message)
@@ -280,7 +290,7 @@ class ModelPool:
         used = ", ".join(f"{n}: {t}" for n, t in (self.used or {}).items()) or "none yet"
         return (f"{mode} Most recent request went to {self.last or 'no model yet'}. "
                 f"Tokens since Ivy started: {used}. Available right now: {self.status()}. "
-                "Groq's daily totals aren't visible to Ivy; they're on console.groq.com. "
+                "Daily totals aren't visible to Ivy; they're on the provider's dashboard. "
                 "Romeu can switch by saying 'use your lightest model', 'use your heaviest model' or "
                 "'use automatic', or with /model.")
 

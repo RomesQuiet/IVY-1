@@ -58,6 +58,7 @@ BUGS = [
     ("backup thinking is shown", "ivy/brain.py", 'held = e.tier == "backup"', "held = False"),
     ("the model can't switch", "ivy/brain.py", 'if name == "switch_model":', "if False:"),
     ("file patterns search as words", "ivy/tools.py", 'if "*" in query or "?" in query:', "if False:"),
+    ("cloudflare retries all day", "ivy/router.py", 'if e.provider == "cloudflare" and re.search', 'if False and re.search'),
     ("page function renamed", "ivy/ui/index.html", "window.toolDone =", "window.toolFinished ="),
 ]
 

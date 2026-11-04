@@ -27,6 +27,9 @@ Every request takes the same steps, and only the depth changes:
    ("How you decide" in `SYSTEM_PROMPT`).
 4. **Act and verify:** tools report what really happened.
 
+Chat runs on Cloudflare only (`CHAT_PROVIDERS` in `ivy/config.py`), Romeu's choice on 2026-11-04:
+fast is gemma 4 26b, main is gpt-oss-120b. Groq still handles voice, `see_screen` and `deep_web_search`.
+
 | Route | Model | Thinking | Reply limit | Gets |
 |---|---|---|---|---|
 | quick | fast | low | 400 | short prompt, one likely tool, last few messages |

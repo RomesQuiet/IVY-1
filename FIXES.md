@@ -29,6 +29,16 @@ Every request now goes through the AI, with depth set by the route. See `CLAUDE.
 tools replaced by stand-ins: "open safari" 432 in + 36 out, one call. "Why is the sky blue?" about
 2,300 in total. A pong build used about 2,700 in + 2,000 out on its first call alone.
 
+## Cloudflare fallback (2026-11-04)
+Tested against the real service. Groq stays first; when it runs out, gemma 4 26b takes quick and simple
+requests and `gpt-oss-120b` takes medium and complex ones. Both made correct tool calls, streamed and
+unstreamed, in real Ivy requests. Not yet seen: Cloudflare's real "daily neurons used up" error.
+
+## Cloudflare only (2026-11-04)
+Romeu chose Cloudflare as the only chat provider (`CHAT_PROVIDERS`). Lost: Groq's speed, its
+per-minute budget alongside Cloudflare's, and the qwen backup tier. Voice, `see_screen` and
+`deep_web_search` still use Groq directly.
+
 ## Known limits
 - `brew`, `pip` and `npm` uninstalls can't be restored from the holding folder; they can only be reinstalled.
 - Scripts run by `run_python` can still delete files once approved, except in `/Applications`.
